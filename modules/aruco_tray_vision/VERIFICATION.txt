@@ -1,0 +1,10 @@
+PY_COMPILE return=0
+
+PYTEST return=0
+......                                                                   [100%]
+6 passed in 0.07s
+
+SELF-TEST return=0
+[SELF-TEST] 6DoF pose -> 3D grip target: PASS
+[SELF-TEST] GUI 실행: python main.py
+

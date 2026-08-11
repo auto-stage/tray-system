@@ -1,0 +1,19 @@
+# marker_to_grip_mm is a rigid design/measured offset in the MARKER coordinate frame.
+# Replace these example values with actual tray geometry later.
+trays:
+  1:
+    tray_code: "A-01"
+    marker_size_mm: 50.0
+    marker_to_grip_mm: {x: 80.0, y: 30.0, z: 0.0}
+  2:
+    tray_code: "A-02"
+    marker_size_mm: 50.0
+    marker_to_grip_mm: {x: 80.0, y: 30.0, z: 0.0}
+  3:
+    tray_code: "B-01"
+    marker_size_mm: 50.0
+    marker_to_grip_mm: {x: 80.0, y: 30.0, z: 0.0}
+  4:
+    tray_code: "B-02"
+    marker_size_mm: 50.0
+    marker_to_grip_mm: {x: 80.0, y: 30.0, z: 0.0}

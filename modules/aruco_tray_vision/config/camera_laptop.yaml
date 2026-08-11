@@ -1,0 +1,22 @@
+calibrated: true
+camera_name: camera_laptop
+camera_index_hint: 0
+image_width: 640
+image_height: 480
+rms_reprojection_error: 1.2450655835920919
+camera_matrix:
+- - 612.0275667733425
+  - 0.0
+  - 298.56222978668376
+- - 0.0
+  - 604.8525903710804
+  - 213.5700304565033
+- - 0.0
+  - 0.0
+  - 1.0
+distortion_coefficients:
+- 0.1299515922504797
+- -0.9208798547429305
+- -0.0014876422106862366
+- -0.01080016122405814
+- 1.173714281928321

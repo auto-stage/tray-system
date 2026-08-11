@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+env/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# STM32CubeIDE generated build output
+**/Debug/
+**/Release/
+*.elf
+*.map
+*.list
+*.o
+*.d
+*.su
+*.cyclo
+
+# Runtime output / logs
+logs/
+output/
+captures/
+*.log
+
+# Secrets / machine-local settings
+.env
+.env.*
+*.key
+secrets.*

@@ -1,0 +1,24 @@
+aruco_dictionary: "DICT_4X4_50"
+
+pose_limits:
+  # Provisional values. Tune from real gripper/tray tolerance tests.
+  roll_abs_max_deg: 180.0
+  pitch_abs_max_deg: 30.0
+  yaw_abs_max_deg: 30.0
+
+integration:
+  camera_mount_mode: "UNDECIDED"  # EYE_IN_HAND or FIXED_OVERHEAD
+
+  # Must be calibrated after camera and stage are physically fixed.
+  camera_to_stage:
+    calibrated: false
+    matrix_4x4: null
+
+  # Map stage-frame XYZ to the two physical stage axes after hardware is known.
+  # Example only; actual system may be X/Z rather than X/Y.
+  stage_axis_mapping:
+    axis1: "x"
+    axis2: "y"
+
+  camera_to_gripper_tcp_mm: null
+  stage_feedback_source: null

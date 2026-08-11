@@ -1,0 +1,18 @@
+main.py                         : 프로그램 실행 진입점(GUI / self-test).
+gui_app.py                      : 카메라 영상, 6DoF 값, 캘리브레이션, 시퀀스를 표시하는 PyQt6 GUI.
+aruco_tray/vision.py            : ArUco ID/코너 검출과 solvePnP 기반 6DoF 자세 추정.
+aruco_tray/geometry.py          : 회전행렬→Roll/Pitch/Yaw 변환 및 3D 파지점 계산.
+aruco_tray/models.py            : Marker/Tray/Pose/Grip 데이터 구조 정의.
+aruco_tray/config.py            : YAML 설정과 트레이 데이터 로드.
+aruco_tray/calibration.py       : 체커보드 기반 카메라 내부 캘리브레이션.
+aruco_tray/safety.py            : Roll/Pitch/Yaw 허용범위 판정.
+aruco_tray/controller.py        : 검출값→트레이→3D 파지점→안전판정→Stage 좌표 연결.
+aruco_tray/transforms.py        : Camera→Stage 4×4 좌표변환 계산.
+aruco_tray/interfaces.py        : 실제 스테이지/그리퍼와 상위 코드 사이 공통 인터페이스.
+aruco_tray/stage_serial.py      : 추후 STM 스테이지 UART 통합용 어댑터 골격.
+aruco_tray/gripper_serial.py    : 추후 실제 그리퍼 명령 통합용 어댑터 골격.
+config/trays.yaml               : Marker ID, 실제 마커 크기, Marker→Grip 3D 고정 치수.
+config/system.yaml              : 자세 허용값과 Camera→Stage/실제 2축 매핑 통합 설정.
+config/camera_*.yaml            : 노트북/외장 웹캠별 내부 캘리브레이션 결과 저장.
+patterns/                       : ArUco ID 1~4와 9×6 체커보드 PNG/PDF.
+tests/                          : 3D 회전/파지점/안전판정/좌표변환 자동 테스트.

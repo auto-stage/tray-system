@@ -1,0 +1,8 @@
+calibrated: false
+camera_name: "External webcam"
+camera_index_hint: 1
+image_width: null
+image_height: null
+rms_reprojection_error: null
+camera_matrix: null
+distortion_coefficients: null
