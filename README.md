@@ -1,181 +1,414 @@
-# AI Vision-Based 2-Axis Tray Supply System
+# tray-system
 
-OCR 기반 작업지시서 인식, ArUco 마커 기반 Tray 위치/자세 인식, STM32 기반 2축 스테이지 제어를 하나의 GitHub 저장소에서 관리하기 위한 통합 워크스페이스입니다.
+AI 비전 기반 2축 스테이션 연계 트레이 자동 조달 시스템
 
-> 현재 상태: 세 파트는 **아직 하나의 실행 시퀀스로 통합되지 않았습니다.** 이 저장소는 각 파트의 독립 실행 가능성을 유지하면서 추후 통합하기 쉽도록 디렉터리와 데이터 파일을 정리한 버전입니다.
+## 1. 프로젝트 개요
 
-## Repository Structure
+본 프로젝트는 작업지시서 인식, ArUco 마커 기반 트레이 위치·자세 추정, 2축 스테이지 제어를 연계하여 작업 대상 트레이를 자동으로 식별하고 조달하기 위한 시스템입니다.
+
+현재 각 기능 모듈은 개별적으로 개발·검증 중이며, 최종 통합 단계에서는 다음 흐름으로 연결할 예정입니다.
 
 ```text
-ai_vision_2axis_tray_supply_system/
+작업지시서 이미지
+      ↓
+OCR 작업지시서 인식
+      ↓
+작업 대상 / Tray ID 결정
+      ↓
+ArUco 마커 검출
+      ↓
+Tray 6DoF Pose 추정
+      ↓
+3D Grip Target 계산
+      ↓
+Camera → Stage 좌표 변환
+      ↓
+PC Stage Control
+      ↓ Serial/UART
+STM32 Stage Controller
+      ↓
+X/Z 2축 스테이지 구동
+```
+
+## 2. 현재 개발 상태
+
+현재 저장소는 다음 세 핵심 파트를 중심으로 구성되어 있습니다.
+
+1. **STM32 2축 스테이지 펌웨어**
+   - X/Z축 스텝모터 제어
+   - PUL/DIR/ENA 제어
+   - 리밋 입력
+   - E-STOP
+   - UART 명령 처리
+
+2. **OCR 작업지시서 인식**
+   - 작업지시서 이미지 입력
+   - OCR 기반 문자열 인식
+   - 작업 대상 매칭 시험
+   - 다양한 촬영 조건의 테스트 이미지 관리
+
+3. **ArUco 기반 트레이 비전**
+   - 카메라 입력
+   - ArUco ID 검출
+   - Tray ID 매칭
+   - 6DoF Pose 추정
+   - 3D Grip Target 계산
+   - Roll/Pitch/Yaw 유효성 검사
+   - 추후 Camera → Stage extrinsic 적용 예정
+
+현재 세 파트는 완전 통합 전 단계이며, 각 모듈의 독립 동작을 우선 유지합니다.
+
+## 3. Repository 구조
+
+```text
+tray-system/
+│
 ├── README.md
 ├── requirements.txt
 ├── .gitignore
+│
 ├── firmware/
 │   ├── README.md
-│   └── stm32_stage_controller/       # STM32CubeIDE / NUCLEO-F767ZI 2축 Stage
+│   └── stm32_stage_controller/
+│       ├── Core/
+│       ├── Drivers/
+│       ├── .settings/
+│       ├── stage_move.ioc
+│       └── ...
+│
 ├── modules/
-│   ├── work_order_ocr/               # OCR 작업지시서 인식
+│   ├── stage_control/
+│   │   └── README.md
+│   ├── work_order_ocr/
+│   │   ├── README.md
+│   │   ├── requirements.txt
 │   │   ├── ocr_test.py
 │   │   ├── match_test.py
-│   │   ├── requirements.txt
-│   │   └── data/work_orders/         # 작업지시서 테스트 이미지
-│   └── aruco_tray_vision/            # ArUco 6DoF Tray 검출/파지 목표 계산
+│   │   └── data/
+│   │       └── work_orders/
+│   └── aruco_tray_vision/
 │       ├── aruco_tray/
 │       ├── config/
 │       ├── patterns/
 │       ├── tests/
 │       ├── tools/
 │       ├── main.py
-│       └── gui_app.py
+│       ├── gui_app.py
+│       └── requirements.txt
+│
 ├── integration/
-│   └── README.md                     # 추후 통합 계층
+│   └── README.md
+│
 └── docs/
     └── INTEGRATION_PLAN.md
 ```
 
-## Part 1 — STM32 2-Axis Stage Controller
+## 4. 각 디렉터리 역할
 
-경로:
+### `firmware/stm32_stage_controller/`
+
+STM32에서 실제로 실행되는 2축 스테이지 제어 펌웨어입니다.
+
+주요 역할:
+- X축 PUL/DIR/ENA 제어
+- Z축 PUL/DIR/ENA 제어
+- X/Z 리밋 입력
+- E-STOP 입력
+- UART 명령 수신
+- 동작 상태 및 ACK 응답
+
+STM32CubeIDE 프로젝트 형식을 유지합니다.
+
+빌드 결과물인 `Debug/`, `Release/`, `*.o`, `*.elf`, `*.map` 등은 Git으로 관리하지 않습니다.
+
+### `modules/stage_control/`
+
+PC에서 STM32 스테이지를 직접 제어하기 위한 전용 모듈입니다.
+
+ArUco 비전과 관계없이 액추에이터를 단독으로 수동 시험하거나 유지보수할 때 사용할 수 있도록 구성합니다.
+
+예정 구조:
 
 ```text
-firmware/stm32_stage_controller/
+modules/stage_control/
+├── README.md
+├── stage_serial.py
+├── manual_control.py
+└── manual_gui.py
 ```
 
-STM32CubeIDE 프로젝트 전체를 유지했습니다. 원본에 포함되어 있던 `Debug/` 폴더는 컴파일 산출물이므로 GitHub 버전에서는 제외했습니다.
+예정 역할:
+- STM32 Serial/UART 연결
+- X축 수동 이동
+- Z축 수동 이동
+- Homing
+- Stop
+- 상태/ACK 확인
+- 스테이지 단독 동작 시험
+- GUI 기반 수동 제어
 
-확인된 핵심 설정 (`Core/Src/main.c`):
+> 현재 ArUco 모듈 내부에도 `stage_serial.py`가 존재합니다.
+> 기존 비전 코드의 정상 동작을 보존하기 위해 당장은 그대로 유지합니다.
+> 최종 통합 단계에서 공통 Stage Serial 계층으로 통합하거나 import 구조로 변경할 예정입니다.
 
-| 기능 | 핀/주변장치 |
-|---|---|
-| X STEP/PUL | PA8 / TIM1_CH1 |
-| Z STEP/PUL | PC6 / TIM8_CH1 |
-| X DIR | PD4 |
-| X ENA | PD5 |
-| Z DIR | PD6 |
-| Z ENA | PD7 |
-| X MIN | PF12 |
-| X MAX | PF13 |
-| Z MIN | PF14 |
-| Z MAX | PF15 |
-| E-STOP | PG2 |
-| PC 통신 | USART3 |
+### `modules/work_order_ocr/`
 
-현재 코드에 들어 있는 대표적인 장비 의존 파라미터:
-
-- X/Z `steps_per_mm`: 기본 320 step/mm
-- X soft limit: 0–1000 mm
-- Z soft limit: 0–700 mm
-- Home fast/slow 속도와 가속도
-- Home backoff 거리
-- DIR 논리 레벨
-- ENA 논리 레벨
-- Limit/E-Stop active level
-- Timer clock/prescaler
-
-실제 기구, 드라이버 설정 및 센서 배선에 맞춰 최종 확정해야 합니다.
-
-## Part 2 — Work Order OCR
-
-경로:
+OCR 기반 작업지시서 인식 모듈입니다.
 
 ```text
 modules/work_order_ocr/
-```
-
-기존 Python 코드와 작업지시서 이미지를 분리했습니다.
-
-```text
-work_order_ocr/
 ├── ocr_test.py
 ├── match_test.py
-└── data/work_orders/
-    ├── work_order*.jpg
-    ├── work_dark.jpg
-    ├── work_mid.jpg
-    ├── work_light.jpg
-    └── ...
+└── data/
+    └── work_orders/
 ```
 
-`ocr_test.py`의 기본 입력 이미지 경로도 새 데이터 폴더를 기준으로 동작하도록 변경했습니다. OCR/매칭 알고리즘 자체는 변경하지 않았습니다.
+`data/work_orders/`에는 OCR 테스트에 사용하는 작업지시서 이미지들을 관리합니다.
 
-실행:
+### `modules/aruco_tray_vision/`
 
-```bash
-python modules/work_order_ocr/ocr_test.py
-python modules/work_order_ocr/match_test.py
-```
+ArUco 마커 기반 트레이 인식 및 3D 위치·자세 추정 모듈입니다.
 
-## Part 3 — ArUco Tray Vision
+주요 기능:
+- 카메라 프레임 획득
+- ArUco Marker ID 검출
+- Tray 정보 매칭
+- 6DoF Pose 계산
+- 3D Grip Target 계산
+- Roll/Pitch/Yaw 허용범위 검사
+- 카메라 캘리브레이션
+- Stage Serial 연계 인터페이스
 
-경로:
+현재 Camera → Stage extrinsic calibration은 실제 스테이지 통합 시 적용할 예정입니다.
+
+### `integration/`
+
+최종 시스템 통합 계층입니다.
 
 ```text
-modules/aruco_tray_vision/
+OCR
+ ↓
+Tray 선택
+ ↓
+ArUco Vision
+ ↓
+3D Grip Target
+ ↓
+Camera → Stage Transform
+ ↓
+Stage Control
+ ↓
+STM32
 ```
 
-기존 `aruco_tray_system_v3_6dof`의 Python 패키지, GUI, YAML 설정, 테스트, ArUco/Checkerboard 패턴 파일을 그대로 유지했습니다. `__pycache__`와 `.pyc`만 제거했습니다.
+## 5. STM32 주요 핀맵
 
-실행:
+| 기능 | STM32 핀 |
+|---|---|
+| X STEP/PUL | PA8 / TIM1_CH1 |
+| X DIR | PD4 |
+| X ENA | PD5 |
+| Z STEP/PUL | PC6 / TIM8_CH1 |
+| Z DIR | PD6 |
+| Z ENA | PD7 |
+| X MIN LIMIT | PF12 |
+| X MAX LIMIT | PF13 |
+| Z MIN LIMIT | PF14 |
+| Z MAX LIMIT | PF15 |
+| E-STOP | PG2 |
+| PC 통신 | USART3 |
+
+> 실제 하드웨어 변경 시 `main.c`, `.ioc` 및 본 문서를 함께 갱신해야 합니다.
+
+## 6. 실측/확정이 필요한 주요 파라미터
+
+- X축 이동 범위
+- Z축 이동 범위
+- X축 steps/mm
+- Z축 steps/mm
+- 마이크로스텝 설정
+- 모터 1회전당 pulse 수
+- 볼스크류/리드스크류 lead
+- 모터 이동 방향
+- 리밋 스위치 논리
+- E-STOP 논리
+- 최대 이동 속도
+- 가속/감속 조건
+- Camera → Stage extrinsic transform
+- 실제 Grip Target offset
+
+## 7. Python 환경 구성
 
 ```bash
-cd modules/aruco_tray_vision
-python main.py
-```
+cd ~/tray-system
 
-Self-test:
-
-```bash
-cd modules/aruco_tray_vision
-python main.py --self-test
-pytest -q
-```
-
-현재 `config/system.yaml`에서 Camera→Stage extrinsic은 의도적으로 미설정 상태이며, 실제 카메라와 스테이지 설치 후 캘리브레이션해야 합니다.
-
-## Python Environment
-
-Ubuntu 예시:
-
-```bash
-cd ai_vision_2axis_tray_supply_system
 python3 -m venv .venv
 source .venv/bin/activate
+
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-EasyOCR는 최초 실행 시 모델 파일 다운로드가 발생할 수 있습니다.
+## 8. 개별 모듈 실행
 
-## Future Integration
-
-통합 시 권장 데이터 흐름은 다음과 같습니다.
-
-```text
-작업지시서 이미지
- -> OCR
- -> 품목/규격/수량/Tray ID 결정
- -> 해당 Tray ArUco 검출
- -> 6DoF 및 3D 파지점 계산
- -> Camera 좌표계 -> Stage 좌표계 변환
- -> PC Stage 명령 생성
- -> UART/Serial
- -> STM32 2축 Stage 구동
-```
-
-구체적인 통합 계획은 `docs/INTEGRATION_PLAN.md`를 참고하십시오.
-
-## GitHub Upload
-
-GitHub에서 빈 저장소를 만든 뒤 이 폴더에서:
+### OCR
 
 ```bash
-git init
-git add .
-git commit -m "Initial project workspace"
-git branch -M main
-git remote add origin <YOUR_GITHUB_REPOSITORY_URL>
-git push -u origin main
+cd ~/tray-system
+python modules/work_order_ocr/ocr_test.py
 ```
 
-STM32의 `Debug/`, Python의 `__pycache__/`, 가상환경 등은 `.gitignore`로 제외되어 있습니다.
+```bash
+python modules/work_order_ocr/match_test.py
+```
+
+### ArUco
+
+```bash
+cd ~/tray-system/modules/aruco_tray_vision
+python main.py
+```
+
+```bash
+python main.py --self-test
+pytest -q
+```
+
+### Stage Control
+
+현재 PC 측 수동 제어 모듈을 별도로 구성하는 단계입니다.
+
+향후:
+
+```bash
+python modules/stage_control/manual_control.py
+```
+
+또는:
+
+```bash
+python modules/stage_control/manual_gui.py
+```
+
+형태로 실행할 예정입니다.
+
+## 9. Git 협업 규칙
+
+본 프로젝트는 3인 협업을 기준으로 다음 GitHub Flow를 사용합니다.
+
+```text
+main
+ ↓
+feature branch 생성
+ ↓
+코드 수정
+ ↓
+commit
+ ↓
+push
+ ↓
+Pull Request
+ ↓
+다른 팀원 검토
+ ↓
+Merge
+ ↓
+main 최신화
+```
+
+### 작업 시작
+
+```bash
+cd ~/tray-system
+
+git switch main
+git pull
+
+git switch -c feature/작업이름
+```
+
+### 코드 수정 후
+
+```bash
+git status
+git diff
+git add 수정한파일또는폴더
+git commit -m "변경 내용"
+git push -u origin feature/작업이름
+```
+
+GitHub에서 Pull Request를 생성하고 검토 후 `main`에 Merge합니다.
+
+Merge 완료 후:
+
+```bash
+git switch main
+git pull
+```
+
+작업이 끝난 로컬 브랜치는:
+
+```bash
+git branch -d feature/작업이름
+```
+
+으로 삭제할 수 있습니다.
+
+## 10. 담당 파트 권장 구분
+
+| 담당 | 주요 작업 경로 |
+|---|---|
+| STM32 / 액추에이터 | `firmware/stm32_stage_controller/`, `modules/stage_control/` |
+| OCR | `modules/work_order_ocr/` |
+| ArUco / Vision | `modules/aruco_tray_vision/` |
+| 통합 | `integration/` |
+
+공통 파일인 다음 항목은 수정 전에 팀원 간 공유를 권장합니다.
+
+- `README.md`
+- `requirements.txt`
+- `integration/`
+- 공통 config
+- 공통 interface
+
+## 11. Git 사용 시 주의사항
+
+다음 명령은 원리를 충분히 이해하기 전까지 임의로 사용하지 않습니다.
+
+```bash
+git push --force
+git reset --hard
+```
+
+또한 다음 정보는 절대 저장소에 commit하지 않습니다.
+
+- GitHub Token
+- API Key
+- 비밀번호
+- SSH Private Key
+- 개인 인증 파일
+- `.env` 내 실제 비밀정보
+
+## 12. 개발 원칙
+
+1. 현재 정상 동작하는 각 파트의 코드는 최대한 유지합니다.
+2. 새 기능은 기존 코드를 비침습적으로 확장하는 방식으로 추가합니다.
+3. 각 모듈은 최종 통합 전까지 독립 실행 및 시험이 가능해야 합니다.
+4. 하드웨어 의존 파라미터는 실측 후 확정합니다.
+5. 공통 통신 계층은 통합 시 중복 구현을 정리합니다.
+6. `main`에는 검증된 코드만 Merge하는 것을 원칙으로 합니다.
+7. 기능 추가·파라미터 변경·실행 방법 변경 시 본 README를 함께 갱신합니다.
+
+## 13. 향후 통합 예정 사항
+
+- PC용 Stage Manual Control 구현
+- STM32 Serial Protocol 정리
+- ArUco 내부 Stage Serial과 공통 Stage Control 계층 정리
+- Camera → Stage extrinsic calibration
+- OCR 결과 → Tray ID 매핑
+- Tray ID → ArUco Target 연계
+- Vision Grip Target → Stage Target 변환
+- 통합 Safety/Interlock
+- 전체 자동 조달 Sequence 구현
+- 통합 GUI 구성
+- End-to-End 실제 장비 검증
