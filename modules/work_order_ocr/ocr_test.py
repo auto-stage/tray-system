@@ -1,3 +1,4 @@
+# Git collaboration test
 import easyocr
 import warnings
 import re
