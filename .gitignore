@@ -36,3 +36,4 @@ captures/
 .env.*
 *.key
 secrets.*
+*.launch
