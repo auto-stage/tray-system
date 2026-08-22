@@ -1,0 +1,10 @@
+{
+  "description": "Automates industrial tray procurement by analyzing work orders, guiding operators through picking with AI verification to ensure accurate part handling.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
