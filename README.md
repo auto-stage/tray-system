@@ -412,3 +412,12 @@ git reset --hard
 - 전체 자동 조달 Sequence 구현
 - 통합 GUI 구성
 - End-to-End 실제 장비 검증
+
+---
+
+## X-Z Stage Integration
+
+X-Z Stage 좌표 매핑, STM32 연동, HOME 안전 로직 및
+실제 장비 적용 절차는 아래 문서를 참고하세요.
+
+- [Stage Mapping Integration Guide](docs/STAGE_MAPPING_INTEGRATION.md)
