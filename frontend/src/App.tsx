@@ -1083,133 +1083,254 @@ function TrayMovingScreen({
   isPaused: boolean; showStop: boolean
   onArrived: () => void; onPause: () => void; onStop: () => void
 }) {
-  const stages = ['대기', 'Tray 탐색', 'ArUco 확인', 'Tray 접근', 'Tray 이동', '작업 위치 이동', '도착']
-  const [stageIdx, setStageIdx] = useState(0)
-  const [xPos, setXPos] = useState(0)
-  const [zPos, setZPos] = useState(0)
-  const [arucoMatch, setArucoMatch] = useState(false)
-  const targetX = 358
-  const targetZ = 126
+  const stages = [
+    '대기',
+    'Tray 탐색',
+    'ArUco 확인',
+    'Tray 접근',
+    'Tray 이동',
+    '작업 위치 이동',
+    '도착'
+  ]
+
+  const [stageIdx, setStageIdx] =
+    useState(0)
+
+  const [xPos, setXPos] =
+    useState(0)
+
+  const [zPos, setZPos] =
+    useState(0)
+
+  const [arucoMatch, setArucoMatch] =
+    useState(false)
+
+  const [stageStatus, setStageStatus] =
+    useState<any>(null)
+
+  const startPosRef =
+    useRef<{
+      x: number
+      z: number
+    } | null>(null)
+
+  const targetTrayId =
+    Number(
+      item.tray.match(/\d+/)?.[0]
+      ?? -1
+    )
+
+  const targetX =
+    Number(
+      stageStatus?.current_target?.x_mm
+      ?? 0
+    )
+
+  const targetZ =
+    Number(
+      stageStatus?.current_target?.z_mm
+      ?? 0
+    )
+
 
   // ------------------------------------------------------------
-  // 1) 화면 단계 진행
-  // 도착(6)은 시간으로 만들지 않는다.
-  // '작업 위치 이동'(5)까지만 단계 타이머로 진행한다.
+  // UI 단계 표시는 기존 흐름 유지
+  // 도착 판정만 실제 Stage 상태로 처리
   // ------------------------------------------------------------
   useEffect(() => {
-    if (isPaused || showStop) {
-      return
-    }
-
-    const delays = [800, 1200, 1400, 1000, 1400]
-
-    // 0~4까지만 시간 기반으로 다음 상태 표시
-    if (stageIdx >= 5) {
-      return
-    }
-
-    const stageTimer = setTimeout(() => {
-      const nextStage = stageIdx + 1
-
-      setStageIdx(nextStage)
-
-      if (nextStage >= 2) {
-        setArucoMatch(true)
-      }
-    }, delays[stageIdx] ?? 1000)
-
-    return () => {
-      clearTimeout(stageTimer)
-    }
-  }, [isPaused, showStop, stageIdx])
-
-
-  // ------------------------------------------------------------
-  // 2) Mock Stage 위치 이동
-  // 일시정지하면 그대로 멈추고, 재개하면 현재 좌표부터 이어진다.
-  //
-  // 나중에 실제 STM32 연결 시 이 가짜 증가 로직을 제거하고
-  // 실제 Stage status의 X/Z 좌표를 받아오면 된다.
-  // ------------------------------------------------------------
-  useEffect(() => {
-    if (isPaused || showStop) {
-      return
-    }
-
     if (
-      xPos >= targetX &&
-      zPos >= targetZ
+      isPaused ||
+      showStop ||
+      stageIdx >= 5
     ) {
       return
     }
 
-    const posTimer = setInterval(() => {
-      setXPos(current =>
-        Math.min(
-          current + 2,
-          targetX
-        )
-      )
+    const delays = [
+      800,
+      1200,
+      1400,
+      1000,
+      1400,
+    ]
 
-      setZPos(current =>
-        Math.min(
-          Math.round(
-            (current + 0.7) * 10
-          ) / 10,
-          targetZ
-        )
-      )
-    }, 100)
+    const timer =
+      setTimeout(() => {
+        const next =
+          stageIdx + 1
 
-    return () => {
-      clearInterval(posTimer)
-    }
+        setStageIdx(next)
+
+        if (next >= 2) {
+          setArucoMatch(true)
+        }
+      }, delays[stageIdx] ?? 1000)
+
+    return () =>
+      clearTimeout(timer)
+
   }, [
     isPaused,
     showStop,
-    xPos,
-    zPos
+    stageIdx
   ])
 
 
   // ------------------------------------------------------------
-  // 3) 실제 '도착' 판정
-  //
-  // 화면 타이머가 아니라:
-  // X == 목표 X
-  // Z == 목표 Z
-  // 작업 위치 이동 단계까지 진행됨
-  // 세 조건이 모두 맞아야 ARRIVED가 된다.
+  // 실제 Backend Stage 상태 조회
+  // Mock/STM32 어느 쪽이든 동일 API 사용
   // ------------------------------------------------------------
   useEffect(() => {
-    if (isPaused || showStop) {
+    let cancelled = false
+
+    const pollStageStatus =
+      async () => {
+        try {
+          const response =
+            await fetch(
+              'http://127.0.0.1:8000/stage/status'
+            )
+
+          if (!response.ok) {
+            throw new Error(
+              `Stage status 오류: ${response.status}`
+            )
+          }
+
+          const status =
+            await response.json()
+
+          if (cancelled) {
+            return
+          }
+
+          setStageStatus(
+            status
+          )
+
+          const nextX =
+            Number(
+              status?.position?.x
+              ?? 0
+            )
+
+          const nextZ =
+            Number(
+              status?.position?.z
+              ?? 0
+            )
+
+          setXPos(
+            Math.round(
+              nextX * 1000
+            ) / 1000
+          )
+
+          setZPos(
+            Math.round(
+              nextZ * 1000
+            ) / 1000
+          )
+
+          // 이동 목표가 처음 잡힌 순간의
+          // 시작 위치를 진행률 계산 기준으로 저장
+          if (
+            !startPosRef.current &&
+            status?.current_target
+          ) {
+            startPosRef.current = {
+              x: nextX,
+              z: nextZ,
+            }
+          }
+
+        } catch (error) {
+          console.error(
+            '[STAGE] status 조회 실패:',
+            error
+          )
+        }
+      }
+
+    pollStageStatus()
+
+    const timer =
+      setInterval(
+        pollStageStatus,
+        250
+      )
+
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+
+  }, [])
+
+
+  // ------------------------------------------------------------
+  // 실제 도착 판정
+  //
+  // STM32StageAdapter:
+  //   이동 완료 후 current_tray 설정 + READY
+  //
+  // MockStageAdapter:
+  //   이동 완료 후 current_tray 설정 + moving=false
+  // ------------------------------------------------------------
+  useEffect(() => {
+    if (
+      !stageStatus ||
+      isPaused ||
+      showStop
+    ) {
       return
     }
 
-    const positionReached =
-      xPos >= targetX &&
-      zPos >= targetZ
+    const currentTray =
+      Number(
+        stageStatus.current_tray
+      )
+
+    const ready =
+      stageStatus.state === 'READY'
+      ||
+      (
+        stageStatus.mock === true
+        &&
+        stageStatus.moving === false
+      )
+
+    const arrived =
+      Boolean(
+        stageStatus.current_target
+      )
+      &&
+      currentTray === targetTrayId
+      &&
+      ready
+      &&
+      !stageStatus.estop
+      &&
+      !stageStatus.estopped
 
     if (
-      stageIdx === 5 &&
-      positionReached
+      arrived &&
+      stageIdx !== 6
     ) {
       setStageIdx(6)
     }
+
   }, [
+    stageStatus,
+    targetTrayId,
     isPaused,
     showStop,
-    stageIdx,
-    xPos,
-    zPos
+    stageIdx
   ])
 
 
   // ------------------------------------------------------------
-  // 4) ARRIVED가 된 뒤에만 다음 화면으로 이동
-  //
-  // 나중 실제 STM32에서는 이 조건을
-  // 'MOVE_DONE 응답 수신'으로 교체할 수 있다.
+  // 실제 도착 확인 후 Workflow 다음 단계
   // ------------------------------------------------------------
   useEffect(() => {
     if (
@@ -1220,22 +1341,56 @@ function TrayMovingScreen({
       return
     }
 
-    const arrivedTimer = setTimeout(
-      () => {
-        onArrived()
-      },
-      600
-    )
+    const timer =
+      setTimeout(
+        () => {
+          onArrived()
+        },
+        600
+      )
 
-    return () => {
-      clearTimeout(arrivedTimer)
-    }
+    return () =>
+      clearTimeout(timer)
+
   }, [
     isPaused,
     showStop,
     stageIdx,
     onArrived
   ])
+
+
+  const axisProgress = (
+    value: number,
+    target: number,
+    startValue: number
+  ) => {
+    const total =
+      Math.abs(
+        target - startValue
+      )
+
+    if (total < 0.001) {
+      return 100
+    }
+
+    const remaining =
+      Math.abs(
+        target - value
+      )
+
+    return Math.max(
+      0,
+      Math.min(
+        100,
+        (
+          1 -
+          remaining / total
+        ) * 100
+      )
+    )
+  }
+
 
   const trayStatuses = trays.map(t => ({
     ...t,
@@ -1304,17 +1459,34 @@ function TrayMovingScreen({
             {/* Stage position */}
             <div style={{ background: 'white', border: '1px solid var(--hmi-border-light)', padding: '10px 14px' }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: '#374151', marginBottom: 8, letterSpacing: '0.05em' }}>STAGE POSITION</div>
-              {[{ label: 'X Axis', val: xPos, target: 358 }, { label: 'Z Axis', val: zPos, target: 126 }].map(ax => (
+              {[
+                {
+                  label: 'X Axis',
+                  val: xPos,
+                  target: targetX,
+                  start: startPosRef.current?.x ?? xPos,
+                },
+                {
+                  label: 'Z Axis',
+                  val: zPos,
+                  target: targetZ,
+                  start: startPosRef.current?.z ?? zPos,
+                },
+              ].map(ax => (
                 <div key={ax.label} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
                   <span style={{ fontSize: 12, color: 'var(--hmi-text-muted)', width: 60 }}>{ax.label}</span>
                   <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: 15, width: 70, color: 'var(--hmi-blue)' }}>
                     {ax.val} <span style={{ fontSize: 11, fontWeight: 400 }}>mm</span>
                   </span>
                   <div style={{ flex: 1, height: 6, background: '#e5e7eb' }}>
-                    <div style={{ height: '100%', width: `${(ax.val / ax.target) * 100}%`, background: 'var(--hmi-blue)', transition: 'width 0.1s' }} />
+                    <div style={{ height: '100%', width: `${axisProgress(
+                        ax.val,
+                        ax.target,
+                        ax.start
+                      )}%`, background: 'var(--hmi-blue)', transition: 'width 0.1s' }} />
                   </div>
-                  <span className={`badge-${ax.val >= ax.target ? 'green' : 'blue'}`} style={{ fontSize: 9, padding: '1px 5px' }}>
-                    {ax.val >= ax.target ? 'READY' : 'MOVING'}
+                  <span className={`badge-${Math.abs(ax.val - ax.target) <= 0.2 ? 'green' : 'blue'}`} style={{ fontSize: 9, padding: '1px 5px' }}>
+                    {Math.abs(ax.val - ax.target) <= 0.2 ? 'READY' : 'MOVING'}
                   </span>
                 </div>
               ))}
@@ -3728,15 +3900,25 @@ export default function App() {
   // 현재는 FastAPI의 MockStageAdapter가 응답하고,
   // 나중에는 server.py 뒤의 실제 STM32StageAdapter로 교체한다.
   // ============================================================
-  const requestStageMove = async (trayLabel: string) => {
-    const match = trayLabel.match(/\d+/)
+  const requestStageMove = async (
+    trayLabel: string
+  ): Promise<{
+    success: boolean
+    message: string
+  }> => {
+    const match =
+      trayLabel.match(/\d+/)
 
     if (!match) {
-      console.error('[STAGE] Tray 번호를 찾을 수 없습니다:', trayLabel)
-      return
+      return {
+        success: false,
+        message:
+          `Tray 번호를 찾을 수 없습니다: ${trayLabel}`,
+      }
     }
 
-    const trayId = Number(match[0])
+    const trayId =
+      Number(match[0])
 
     try {
       const response = await fetch(
@@ -3747,17 +3929,51 @@ export default function App() {
       )
 
       if (!response.ok) {
-        throw new Error(`Stage 서버 오류: ${response.status}`)
+        throw new Error(
+          `Stage 서버 오류: ${response.status}`
+        )
       }
 
-      const result = await response.json()
-      console.log('[STAGE] 이동 요청 성공:', result)
+      const result =
+        await response.json()
+
+      if (!result.success) {
+        return {
+          success: false,
+          message:
+            result.message ||
+            result.error ||
+            'Stage 이동에 실패했습니다.',
+        }
+      }
+
+      console.log(
+        '[STAGE] 이동 완료:',
+        result
+      )
+
+      return {
+        success: true,
+        message:
+          result.message ||
+          'Stage 이동 완료',
+      }
 
     } catch (error) {
-      console.error('[STAGE] 이동 요청 실패:', error)
+      console.error(
+        '[STAGE] 이동 요청 실패:',
+        error
+      )
+
+      return {
+        success: false,
+        message:
+          error instanceof Error
+            ? error.message
+            : 'Stage 이동 요청 실패',
+      }
     }
   }
-
 
   const requestStagePause = async (): Promise<boolean> => {
     try {
@@ -4749,25 +4965,37 @@ export default function App() {
       return
     }
 
-    // 먼저 UI가 사용할 index를 지정
+    if (!targetItem.tray) {
+      alert(
+        '이동 대상 Tray 정보가 없습니다.'
+      )
+      return
+    }
+
     setCurrentItemIndex(
       itemIndex
     )
 
-    // Stage 명령은 currentItemIndex 상태를 다시 읽지 않고
-    // targetItem의 Tray를 직접 사용한다.
-    //
-    // React state 반영 타이밍과 무관하게
-    // 정확한 다음 Tray가 전송된다.
-    if (targetItem.tray) {
+    // 실제 Stage가 이동하는 동안
+    // TRAY MOVING 화면을 먼저 보여준다.
+    nav('TRAY_MOVING')
+
+    const moveResult =
       await requestStageMove(
         targetItem.tray
       )
+
+    if (!moveResult.success) {
+      alert(
+        `${targetItem.tray} 이동에 실패했습니다.\n\n`
+        + moveResult.message
+      )
+
+      // 현재는 REVIEW로 복귀.
+      // 이후 장비 오류 화면을 실제 오류정보 기반으로 개선 예정.
+      nav('REVIEW')
     }
-
-    nav('TRAY_MOVING')
   }
-
 
   // ============================================================
   // Rack Layout 저장 / 복원
