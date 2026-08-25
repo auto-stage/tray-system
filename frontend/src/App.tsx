@@ -7,7 +7,7 @@ type Screen =
   | 'MAIN' | 'CAMERA_CAPTURE' | 'ANALYZING' | 'REVIEW'
   | 'TRAY_MOVING' | 'PICKING' | 'VERIFICATION' | 'ITEM_COMPLETE'
   | 'FINAL_VERIFICATION' | 'TRAY_RETURN' | 'RELOCATION_COMPLETE'
-  | 'WORK_COMPLETE' | 'WORK_HISTORY' | 'EQUIPMENT_ERROR' | 'EMERGENCY_STOP'
+  | 'WORK_COMPLETE' | 'WORK_HISTORY' | 'SETTINGS' | 'EQUIPMENT_ERROR' | 'EMERGENCY_STOP'
 
 // Rack slot order: [top-left, top-right, mid-left, mid-right, bot-left, bot-right]
 type RackSlots = [string, string, string, string, string, string]
@@ -108,14 +108,115 @@ function formatDate(d: Date) {
 // ============================================================
 // STATUS BAR
 // ============================================================
-function StatusBar({ onHistory, onEmergency, screen }: { onHistory: () => void; onEmergency: () => void; screen: Screen }) {
+function StatusBar({
+  onHistory,
+  onSettings,
+  onEmergency,
+  screen
+}: {
+  onHistory: () => void
+  onSettings: () => void
+  onEmergency: () => void
+  screen: Screen
+}) {
   const now = useNow()
+
+  const [stageStatus, setStageStatus] =
+    useState<any>(null)
+
+  useEffect(() => {
+    let cancelled = false
+
+    const pollStageStatus = async () => {
+      try {
+        const response = await fetch(
+          'http://127.0.0.1:8000/stage/status'
+        )
+
+        if (!response.ok) {
+          throw new Error(
+            `Stage status 오류: ${response.status}`
+          )
+        }
+
+        const status = await response.json()
+
+        if (!cancelled) {
+          setStageStatus(status)
+        }
+
+      } catch (error) {
+        if (!cancelled) {
+          setStageStatus(null)
+        }
+      }
+    }
+
+    pollStageStatus()
+
+    const timer = setInterval(
+      pollStageStatus,
+      1000
+    )
+
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [])
+
+  const stageIsMock =
+    stageStatus?.mock === true
+
+  const realStageConnected =
+    stageStatus?.connected === true
+
+  const stageError =
+    stageStatus?.state === 'ERROR'
+    ||
+    stageStatus?.state === 'ESTOPPED'
+    ||
+    stageStatus?.estop === true
+    ||
+    stageStatus?.estopped === true
+
+  const stageLabel =
+    stageStatus == null
+      ? 'OFFLINE'
+      : stageIsMock
+        ? 'MOCK'
+        : !realStageConnected
+          ? 'DISCONNECTED'
+          : stageError
+            ? 'ERROR'
+            : 'NORMAL'
+
+  const stm32Label =
+    stageStatus == null
+      ? 'DISCONNECTED'
+      : stageIsMock
+        ? 'DISCONNECTED'
+        : realStageConnected
+          ? 'CONNECTED'
+          : 'DISCONNECTED'
+
   const sysItems = [
     { label: 'Camera', val: 'NORMAL', ok: true },
-    { label: 'Stage', val: 'NORMAL', ok: true },
+    {
+      label: 'Stage',
+      val: stageLabel,
+      ok: stageStatus != null && !stageError,
+    },
     { label: 'Database', val: 'NORMAL', ok: true },
     { label: 'Load Cell', val: 'NORMAL', ok: true },
-    { label: 'STM32', val: 'CONNECTED', ok: true },
+    {
+      label: 'STM32',
+      val: stm32Label,
+      ok:
+        !stageIsMock
+        &&
+        realStageConnected,
+    },
   ]
   return (
     <div style={{ background: 'var(--hmi-navy-dark)', borderBottom: '2px solid #1e3a5f', flexShrink: 0 }}>
@@ -144,7 +245,31 @@ function StatusBar({ onHistory, onEmergency, screen }: { onHistory: () => void; 
           <button className="btn-secondary" style={{ padding: '4px 12px', fontSize: 12 }} onClick={onHistory}>
             📋 작업 이력
           </button>
-          <button className="btn-secondary" style={{ padding: '4px 12px', fontSize: 12 }}>
+          <button
+            className="btn-secondary"
+            style={{ padding: '4px 12px', fontSize: 12 }}
+            onClick={onSettings}
+            disabled={[
+              'TRAY_MOVING',
+              'PICKING',
+              'VERIFICATION',
+              'ITEM_COMPLETE',
+              'FINAL_VERIFICATION',
+              'TRAY_RETURN'
+            ].includes(screen)}
+            title={
+              [
+                'TRAY_MOVING',
+                'PICKING',
+                'VERIFICATION',
+                'ITEM_COMPLETE',
+                'FINAL_VERIFICATION',
+                'TRAY_RETURN'
+              ].includes(screen)
+                ? '자동 작업 중에는 Stage 설정을 변경할 수 없습니다.'
+                : 'Stage 제어 및 상태 확인'
+            }
+          >
             ⚙ 설정
           </button>
           <button className="estop-btn" onClick={onEmergency} style={{ fontSize: 12, padding: '5px 12px' }}>
@@ -1360,6 +1485,77 @@ function TrayMovingScreen({
   ])
 
 
+  const hasStageTarget =
+    Boolean(
+      stageStatus?.current_target
+    )
+
+  const axisIsHomed = (
+    axis: 'x' | 'z'
+  ) => {
+    if (!stageStatus) {
+      return false
+    }
+
+    if (stageStatus.mock === true) {
+      return stageStatus.homed === true
+    }
+
+    return (
+      stageStatus?.homed?.[axis]
+      === true
+    )
+  }
+
+  const axisDisplayState = (
+    axis: 'x' | 'z',
+    value: number,
+    target: number
+  ) => {
+    if (!stageStatus) {
+      return 'WAIT'
+    }
+
+    if (
+      stageStatus.mock !== true
+      &&
+      stageStatus.connected !== true
+    ) {
+      return 'DISCONNECTED'
+    }
+
+    if (
+      stageStatus.estop === true
+      ||
+      stageStatus.estopped === true
+      ||
+      stageStatus.state === 'ERROR'
+      ||
+      stageStatus.state === 'ESTOPPED'
+    ) {
+      return 'ERROR'
+    }
+
+    if (!axisIsHomed(axis)) {
+      return 'NOT HOMED'
+    }
+
+    if (!hasStageTarget) {
+      return 'NO TARGET'
+    }
+
+    if (
+      Math.abs(
+        value - target
+      ) <= 0.2
+    ) {
+      return 'READY'
+    }
+
+    return 'MOVING'
+  }
+
+
   const axisProgress = (
     value: number,
     target: number,
@@ -1461,12 +1657,14 @@ function TrayMovingScreen({
               <div style={{ fontSize: 11, fontWeight: 700, color: '#374151', marginBottom: 8, letterSpacing: '0.05em' }}>STAGE POSITION</div>
               {[
                 {
+                  axis: 'x' as const,
                   label: 'X Axis',
                   val: xPos,
                   target: targetX,
                   start: startPosRef.current?.x ?? xPos,
                 },
                 {
+                  axis: 'z' as const,
                   label: 'Z Axis',
                   val: zPos,
                   target: targetZ,
@@ -1479,14 +1677,30 @@ function TrayMovingScreen({
                     {ax.val} <span style={{ fontSize: 11, fontWeight: 400 }}>mm</span>
                   </span>
                   <div style={{ flex: 1, height: 6, background: '#e5e7eb' }}>
-                    <div style={{ height: '100%', width: `${axisProgress(
-                        ax.val,
-                        ax.target,
-                        ax.start
-                      )}%`, background: 'var(--hmi-blue)', transition: 'width 0.1s' }} />
+                    <div style={{ height: '100%', width: `${
+                        hasStageTarget
+                          ? axisProgress(
+                              ax.val,
+                              ax.target,
+                              ax.start
+                            )
+                          : 0
+                      }%`, background: 'var(--hmi-blue)', transition: 'width 0.1s' }} />
                   </div>
-                  <span className={`badge-${Math.abs(ax.val - ax.target) <= 0.2 ? 'green' : 'blue'}`} style={{ fontSize: 9, padding: '1px 5px' }}>
-                    {Math.abs(ax.val - ax.target) <= 0.2 ? 'READY' : 'MOVING'}
+                  <span className={`badge-${
+                    axisDisplayState(
+                      ax.axis,
+                      ax.val,
+                      ax.target
+                    ) === 'READY'
+                      ? 'green'
+                      : 'blue'
+                  }`} style={{ fontSize: 9, padding: '1px 5px' }}>
+                    {axisDisplayState(
+                      ax.axis,
+                      ax.val,
+                      ax.target
+                    )}
                   </span>
                 </div>
               ))}
@@ -3532,6 +3746,488 @@ function EmergencyStopScreen({
   )
 }
 
+
+// ============================================================
+// SCREEN: SETTINGS / STAGE CONTROL
+// ============================================================
+function StageControlScreen({
+  onBack,
+}: {
+  onBack: () => void
+}) {
+  const [status, setStatus] =
+    useState<any>(null)
+
+  const [busy, setBusy] =
+    useState(false)
+
+  const [message, setMessage] =
+    useState('')
+
+
+  const loadStatus = async () => {
+    try {
+      const response = await fetch(
+        'http://127.0.0.1:8000/stage/status'
+      )
+
+      if (!response.ok) {
+        throw new Error(
+          `Stage status 오류: ${response.status}`
+        )
+      }
+
+      const data =
+        await response.json()
+
+      setStatus(data)
+
+    } catch (error) {
+      console.error(
+        '[STAGE CONTROL] status 오류:',
+        error
+      )
+
+      setStatus(null)
+    }
+  }
+
+
+  useEffect(() => {
+    loadStatus()
+
+    const timer =
+      setInterval(
+        loadStatus,
+        500
+      )
+
+    return () =>
+      clearInterval(timer)
+
+  }, [])
+
+
+  const runCommand = async (
+    endpoint: string,
+    successText: string
+  ) => {
+    if (busy) {
+      return
+    }
+
+    setBusy(true)
+    setMessage('처리 중...')
+
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:8000${endpoint}`,
+        {
+          method: 'POST',
+        }
+      )
+
+      if (!response.ok) {
+        throw new Error(
+          `서버 오류: ${response.status}`
+        )
+      }
+
+      const result =
+        await response.json()
+
+      if (!result.success) {
+        throw new Error(
+          result.message ||
+          'Stage 명령 실패'
+        )
+      }
+
+      setMessage(successText)
+
+      await loadStatus()
+
+    } catch (error) {
+      const msg =
+        error instanceof Error
+          ? error.message
+          : 'Stage 명령 실패'
+
+      setMessage(
+        `ERROR: ${msg}`
+      )
+    } finally {
+      setBusy(false)
+    }
+  }
+
+
+  const isMock =
+    status?.mock === true
+
+  const connected =
+    status?.connected === true
+
+  const xHomed =
+    isMock
+      ? status?.homed === true
+      : status?.homed?.x === true
+
+  const zHomed =
+    isMock
+      ? status?.homed === true
+      : status?.homed?.z === true
+
+  const xPos =
+    Number(
+      status?.position?.x ?? 0
+    )
+
+  const zPos =
+    Number(
+      status?.position?.z ?? 0
+    )
+
+  const xMode =
+    isMock
+      ? (
+          status?.moving
+            ? 'MOVING'
+            : xHomed
+              ? 'READY'
+              : 'NOT HOMED'
+        )
+      : (
+          status?.mode?.x
+          ?? 'UNKNOWN'
+        )
+
+  const zMode =
+    isMock
+      ? (
+          status?.moving
+            ? 'MOVING'
+            : zHomed
+              ? 'READY'
+              : 'NOT HOMED'
+        )
+      : (
+          status?.mode?.z
+          ?? 'UNKNOWN'
+        )
+
+
+  return (
+    <div style={{
+      flex: 1,
+      background: '#e5eaf0',
+      padding: 18,
+      overflow: 'auto'
+    }}>
+      <div style={{
+        background: 'var(--hmi-navy)',
+        color: 'white',
+        padding: '10px 16px',
+        fontWeight: 900,
+        fontSize: 16,
+        letterSpacing: '0.08em'
+      }}>
+        STAGE CONTROL
+      </div>
+
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: '1fr 1fr',
+        gap: 14,
+        marginTop: 14
+      }}>
+
+        <div style={{
+          background: 'white',
+          border: '1px solid var(--hmi-border)',
+          padding: 16
+        }}>
+          <div className="section-header">
+            연결 상태
+          </div>
+
+          {[
+            {
+              label: 'Mode',
+              value:
+                status == null
+                  ? 'OFFLINE'
+                  : isMock
+                    ? 'MOCK'
+                    : 'STM32'
+            },
+            {
+              label: 'STM32',
+              value:
+                isMock
+                  ? 'DISCONNECTED'
+                  : connected
+                    ? 'CONNECTED'
+                    : 'DISCONNECTED'
+            },
+            {
+              label: 'Stage State',
+              value:
+                status?.state
+                ?? (
+                  isMock
+                    ? 'MOCK'
+                    : 'UNKNOWN'
+                )
+            }
+          ].map(row => (
+            <div
+              key={row.label}
+              style={{
+                display: 'flex',
+                padding: '9px 4px',
+                borderBottom:
+                  '1px solid #e5e7eb'
+              }}
+            >
+              <span style={{ flex: 1 }}>
+                {row.label}
+              </span>
+
+              <strong style={{
+                fontFamily:
+                  'JetBrains Mono, monospace'
+              }}>
+                {row.value}
+              </strong>
+            </div>
+          ))}
+        </div>
+
+
+        <div style={{
+          background: 'white',
+          border: '1px solid var(--hmi-border)',
+          padding: 16
+        }}>
+          <div className="section-header">
+            Limit Switch
+          </div>
+
+          {[
+            ['X MIN', status?.limits?.X_MIN],
+            ['X MAX', status?.limits?.X_MAX],
+            ['Z MIN', status?.limits?.Z_MIN],
+            ['Z MAX', status?.limits?.Z_MAX],
+          ].map(([label, value]) => (
+            <div
+              key={String(label)}
+              style={{
+                display: 'flex',
+                padding: '9px 4px',
+                borderBottom:
+                  '1px solid #e5e7eb'
+              }}
+            >
+              <span style={{ flex: 1 }}>
+                {String(label)}
+              </span>
+
+              <strong>
+                {value ? 'ON' : 'OFF'}
+              </strong>
+            </div>
+          ))}
+        </div>
+      </div>
+
+
+      <div style={{
+        background: 'white',
+        border: '1px solid var(--hmi-border)',
+        marginTop: 14,
+        padding: 16
+      }}>
+        <div className="section-header">
+          Axis Status
+        </div>
+
+        {[
+          {
+            axis: 'X',
+            pos: xPos,
+            homed: xHomed,
+            mode: xMode,
+          },
+          {
+            axis: 'Z',
+            pos: zPos,
+            homed: zHomed,
+            mode: zMode,
+          },
+        ].map(axis => (
+          <div
+            key={axis.axis}
+            style={{
+              display: 'grid',
+              gridTemplateColumns:
+                '90px 1fr 160px 160px',
+              alignItems: 'center',
+              gap: 12,
+              padding: '12px 6px',
+              borderBottom:
+                '1px solid #e5e7eb'
+            }}
+          >
+            <strong>
+              {axis.axis} Axis
+            </strong>
+
+            <span style={{
+              fontFamily:
+                'JetBrains Mono, monospace',
+              fontSize: 18,
+              fontWeight: 800
+            }}>
+              {axis.pos.toFixed(3)} mm
+            </span>
+
+            <span>
+              HOME :
+              {' '}
+              <strong style={{
+                color:
+                  axis.homed
+                    ? 'var(--hmi-green)'
+                    : 'var(--hmi-red)'
+              }}>
+                {axis.homed
+                  ? 'DONE'
+                  : 'REQUIRED'}
+              </strong>
+            </span>
+
+            <span>
+              MODE :
+              {' '}
+              <strong>
+                {axis.mode}
+              </strong>
+            </span>
+          </div>
+        ))}
+      </div>
+
+
+      <div style={{
+        background: 'white',
+        border: '1px solid var(--hmi-border)',
+        marginTop: 14,
+        padding: 16
+      }}>
+        <div className="section-header">
+          Manual Control
+        </div>
+
+        <div style={{
+          display: 'flex',
+          gap: 10,
+          marginTop: 12
+        }}>
+          <button
+            className="btn-primary"
+            disabled={busy}
+            onClick={() =>
+              runCommand(
+                '/stage/home',
+                'X/Z HOME 완료'
+              )
+            }
+          >
+            ⌂ X/Z HOME
+          </button>
+
+          <button
+            className="btn-danger"
+            disabled={busy}
+            onClick={() =>
+              runCommand(
+                '/stage/stop',
+                'HARD STOP 완료'
+              )
+            }
+          >
+            ■ HARD STOP
+          </button>
+
+          <button
+            className="btn-warning"
+            disabled={busy}
+            onClick={() => {
+              const ok = window.confirm(
+                'Stage RESET 후 HOME이 다시 필요합니다.\n\nRESET하시겠습니까?'
+              )
+
+              if (ok) {
+                runCommand(
+                  '/stage/reset',
+                  'RESET 완료 - HOME 필요'
+                )
+              }
+            }}
+          >
+            ↺ RESET
+          </button>
+
+          <button
+            className="btn-secondary"
+            disabled={busy}
+            onClick={loadStatus}
+          >
+            ⟳ STATUS 갱신
+          </button>
+        </div>
+
+        <div style={{
+          marginTop: 12,
+          fontFamily:
+            'JetBrains Mono, monospace',
+          fontSize: 12,
+          color:
+            message.startsWith('ERROR')
+              ? 'var(--hmi-red)'
+              : '#374151'
+        }}>
+          {message || 'READY'}
+        </div>
+
+        <div style={{
+          marginTop: 10,
+          fontSize: 11,
+          color: '#6b7280'
+        }}>
+          RESET은 E-STOP/오류 상태를 해제하지만
+          HOME 기준도 해제됩니다.
+          RESET 후 반드시 X/Z HOME을 다시 수행하세요.
+        </div>
+      </div>
+
+
+      <div style={{
+        marginTop: 16
+      }}>
+        <button
+          className="btn-secondary"
+          onClick={onBack}
+        >
+          ← 메인으로
+        </button>
+      </div>
+    </div>
+  )
+}
+
+
 // ============================================================
 // MAIN APP
 // ============================================================
@@ -4095,7 +4791,20 @@ export default function App() {
       }
 
       const result = await response.json()
-      console.log('[STAGE] HOME 요청 성공:', result)
+
+      if (!result.success) {
+        console.error(
+          '[STAGE] HOME 실패:',
+          result
+        )
+        return false
+      }
+
+      console.log(
+        '[STAGE] HOME 요청 성공:',
+        result
+      )
+
       return true
 
     } catch (error) {
@@ -5117,6 +5826,81 @@ export default function App() {
     screen === 'TRAY_RETURN' ? 'Tray 복귀 및 재배치' : screen
 
   const handleWorkStart = async () => {
+    try {
+      const stageResponse = await fetch(
+        'http://127.0.0.1:8000/stage/status'
+      )
+
+      if (!stageResponse.ok) {
+        throw new Error(
+          `Stage 상태 조회 실패: ${stageResponse.status}`
+        )
+      }
+
+      const stageStatus =
+        await stageResponse.json()
+
+      const isMock =
+        stageStatus?.mock === true
+
+      if (
+        !isMock &&
+        stageStatus?.connected !== true
+      ) {
+        alert(
+          'STM32가 연결되어 있지 않습니다.\n\n'
+          + 'Stage 연결 상태를 확인해주세요.'
+        )
+        return
+      }
+
+      const xHomed =
+        isMock
+          ? stageStatus?.homed === true
+          : stageStatus?.homed?.x === true
+
+      const zHomed =
+        isMock
+          ? stageStatus?.homed === true
+          : stageStatus?.homed?.z === true
+
+      if (!xHomed || !zHomed) {
+        const runHome =
+          window.confirm(
+            'Stage HOME이 필요합니다.\n\n'
+            + `X : ${xHomed ? 'HOME 완료' : 'NOT HOMED'}\n`
+            + `Z : ${zHomed ? 'HOME 완료' : 'NOT HOMED'}\n\n`
+            + '지금 X/Z HOME을 실행하시겠습니까?'
+          )
+
+        if (!runHome) {
+          return
+        }
+
+        const homeSuccess =
+          await requestStageHome()
+
+        if (!homeSuccess) {
+          alert(
+            'Stage HOME에 실패했습니다.\n'
+            + '설정 → Stage Control에서 상태를 확인해주세요.'
+          )
+          return
+        }
+      }
+
+    } catch (error) {
+      console.error(
+        '[STAGE] 작업 시작 전 상태 검사 실패:',
+        error
+      )
+
+      alert(
+        'Stage 상태를 확인할 수 없습니다.'
+      )
+      return
+    }
+
     const workflowState =
       await requestWorkflowStart()
 
@@ -5551,7 +6335,12 @@ export default function App() {
   return (
     <div style={{ width: '100%', height: '100vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 1024 }}>
       {showStatusBar && (
-        <StatusBar onHistory={handleShowHistory} onEmergency={handleEmergency} screen={screen} />
+        <StatusBar
+          onHistory={handleShowHistory}
+          onSettings={() => nav('SETTINGS')}
+          onEmergency={handleEmergency}
+          screen={screen}
+        />
       )}
 
       {/* Main content area */}
@@ -5566,6 +6355,12 @@ export default function App() {
             onShowHistory={handleShowHistory}
           />
         )}
+        {screen === 'SETTINGS' && (
+          <StageControlScreen
+            onBack={() => nav('MAIN')}
+          />
+        )}
+
         {screen === 'CAMERA_CAPTURE' && (
           <CameraCaptureScreen
             onUse={() => nav('ANALYZING')}

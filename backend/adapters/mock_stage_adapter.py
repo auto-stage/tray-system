@@ -164,6 +164,25 @@ class MockStageAdapter(StageAdapter):
             "status": self.get_status(),
         }
 
+    def reset_error(self):
+        """
+        실제 STM32 RESET과 동일한 의미의 Mock 복구.
+        E-STOP / 오류는 해제하지만 HOME 기준은 무효화한다.
+        """
+        self.estopped = False
+        self.moving = False
+        self.homed = False
+
+        self.current_tray = None
+        self.current_target = None
+        self.last_error = None
+
+        return {
+            "success": True,
+            "message": "Stage RESET 완료 (MOCK) - HOME 필요",
+            "status": self.get_status(),
+        }
+
     def get_status(self):
         return {
             "connected": False,
