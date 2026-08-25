@@ -1,534 +1,1313 @@
-"""
-STM32 Stage Adapter
-===================
-
-역할
-----
-React UI / FastAPI / WorkflowController 쪽 코드는 그대로 두고,
-이 파일만 실제 STM32의 시리얼 프로토콜에 맞추면 됩니다.
-
-권장 흐름:
-React UI
-  -> FastAPI server.py
-  -> WorkflowController
-  -> STM32StageAdapter
-  -> USB Serial
-  -> STM32
-
-중요:
-- 리밋 스위치 감시, 모터 정지, 원점 복귀의 실제 저수준 안전 동작은 STM32가 담당합니다.
-- Python은 HOME / MOVE / STOP / ESTOP 등의 "고수준 명령"을 보냅니다.
-- STM32는 DONE / ERROR / POSITION / LIMIT 등의 상태를 반환합니다.
-"""
-
 from __future__ import annotations
 
+import glob
+import json
+import os
 import threading
 import time
 from typing import Optional
 
 import serial
 
+from .stage_adapter import StageAdapter
+from .slot_resolver import resolve_tray_target
 
-class STM32StageAdapter:
-    """
-    PC <-> STM32 시리얼 연결 어댑터.
 
-    기본 프로토콜 예:
-        PC -> STM32
-            HOME
-            MOVE:5
-            PAUSE
-            RESUME
-            STOP
-            ESTOP
-            STATUS
-            RESET_ERROR
+# 기존 현장 매핑 프로그램에서 실제 사용한 값 기준
+BAUDRATE = 115200
+STATUS_POLL_SEC = 0.30
 
-        STM32 -> PC
-            READY
-            ACK
-            MOVING:5
-            DONE:5
-            HOME_DONE
-            PAUSED
-            RESUMED
-            STOPPED
-            ESTOPPED
-            POSITION:X=358,Z=126
-            LIMIT:X_MIN=0,X_MAX=0,Z_MIN=1,Z_MAX=0
-            ERROR:LIMIT
-            ERROR:MOTOR
-            ERROR:POSITION
-    """
+HOME_TIMEOUT_SEC = 60.0
+MOVE_TIMEOUT_SEC = 120.0
+
+POSITION_TOLERANCE_MM = 0.10
+
+MOVE_PROFILE = {
+    "X": {
+        "speed": 20.0,
+        "accel": 50.0,
+    },
+    "Z": {
+        "speed": 10.0,
+        "accel": 30.0,
+    },
+}
+
+
+class STM32StageAdapter(StageAdapter):
 
     def __init__(
         self,
-        port: str = "COM3",
-        baudrate: int = 115200,
-        timeout: float = 0.2,
-        command_timeout: float = 15.0,
+        port: Optional[str] = None,
+        baudrate: int = BAUDRATE,
+        read_timeout: float = 0.4,
+        auto_connect: bool = True,
     ):
         self.port = port
         self.baudrate = baudrate
-        self.timeout = timeout
-        self.command_timeout = command_timeout
+        self.read_timeout = read_timeout
 
-        self._serial: Optional[serial.Serial] = None
-        self._lock = threading.Lock()
+        self._serial: Optional[
+            serial.Serial
+        ] = None
+
+        self._io_lock = threading.Lock()
+        self._motion_lock = threading.Lock()
 
         self.state = "DISCONNECTED"
-        self.current_tray: Optional[int] = None
-        self.x: Optional[float] = None
-        self.z: Optional[float] = None
-        self.last_error: Optional[str] = None
 
-        self.limits = {
-            "X_MIN": False,
-            "X_MAX": False,
-            "Z_MIN": False,
-            "Z_MAX": False,
+        self.current_tray = None
+        self.current_target = None
+
+        self.last_error = None
+        self.paused = False
+
+        self._status = {
+            "estop": False,
+            "x": self._empty_axis(),
+            "z": self._empty_axis(),
         }
 
-        self.connect()
+        if auto_connect:
+            self.connect()
 
     # ========================================================
-    # 연결
+    # 기본 상태
     # ========================================================
+
+    @staticmethod
+    def _empty_axis():
+        return {
+            "mode": "UNKNOWN",
+            "pos_mm": 0.0,
+            "steps": 0,
+            "hz": 0,
+            "enabled": False,
+            "homed": False,
+            "min": False,
+            "max": False,
+        }
+
+    # ========================================================
+    # Serial 연결
+    # ========================================================
+
+    def _resolve_port(self):
+
+        if self.port:
+            return self.port
+
+        env_port = os.getenv(
+            "STAGE_SERIAL_PORT"
+        )
+
+        if env_port:
+            return env_port
+
+        candidates = sorted(
+            glob.glob("/dev/ttyACM*")
+            +
+            glob.glob("/dev/ttyUSB*")
+        )
+
+        if candidates:
+            return candidates[0]
+
+        raise RuntimeError(
+            "STM32 Serial 포트를 찾지 못했습니다. "
+            "STAGE_SERIAL_PORT=/dev/ttyACM0 "
+            "형태로 지정하세요."
+        )
 
     def connect(self):
-        if self._serial and self._serial.is_open:
+
+        if (
+            self._serial
+            and
+            self._serial.is_open
+        ):
             return
+
+        self.port = self._resolve_port()
 
         self._serial = serial.Serial(
             port=self.port,
             baudrate=self.baudrate,
-            timeout=self.timeout,
+            timeout=self.read_timeout,
             write_timeout=1.0,
         )
 
-        # 보드 리셋/USB 연결 안정화 여유
-        time.sleep(1.5)
+        time.sleep(0.3)
+
+        self._serial.reset_input_buffer()
+
+        result = self._send_expect(
+            "PING",
+            success="OK PONG",
+            timeout=2.0,
+        )
+
+        if not result["success"]:
+
+            self.close(
+                safe=False
+            )
+
+            raise RuntimeError(
+                "STM32 PING 실패: "
+                + result["message"]
+            )
 
         self.state = "CONNECTED"
+        self.last_error = None
 
-    def close(self):
-        if self._serial and self._serial.is_open:
-            self._serial.close()
+        self.refresh_status()
 
-        self.state = "DISCONNECTED"
+    def close(
+        self,
+        safe: bool = True,
+    ):
+
+        ser = self._serial
+
+        if not ser:
+            self.state = "DISCONNECTED"
+            return
+
+        if (
+            safe
+            and
+            ser.is_open
+        ):
+
+            try:
+
+                self._send_expect(
+                    "STOP ALL HARD",
+                    timeout=1.0,
+                )
+
+                self._send_expect(
+                    "ENABLE X 0",
+                    timeout=1.0,
+                )
+
+                self._send_expect(
+                    "ENABLE Z 0",
+                    timeout=1.0,
+                )
+
+            except Exception:
+                pass
+
+        try:
+
+            ser.close()
+
+        finally:
+
+            self._serial = None
+            self.state = "DISCONNECTED"
 
     # ========================================================
-    # 내부 통신 함수
+    # 저수준 Serial
     # ========================================================
 
-    def _send_line(self, command: str):
-        if not self._serial or not self._serial.is_open:
-            raise RuntimeError("STM32 Serial이 연결되어 있지 않습니다.")
+    def _write_line(
+        self,
+        command: str,
+    ):
 
-        payload = (command.strip() + "\n").encode("utf-8")
-        self._serial.write(payload)
+        if (
+            not self._serial
+            or
+            not self._serial.is_open
+        ):
+
+            raise RuntimeError(
+                "STM32 Serial이 연결되어 있지 않습니다."
+            )
+
+        self._serial.write(
+            (
+                command.strip()
+                + "\n"
+            ).encode("ascii")
+        )
+
         self._serial.flush()
 
-    def _read_line(self) -> Optional[str]:
-        if not self._serial or not self._serial.is_open:
+    def _read_line(self):
+
+        if (
+            not self._serial
+            or
+            not self._serial.is_open
+        ):
             return None
 
-        raw = self._serial.readline()
+        raw = (
+            self._serial.readline()
+        )
 
         if not raw:
             return None
 
         return raw.decode(
-            "utf-8",
+            "ascii",
             errors="replace",
         ).strip()
 
-    def _update_status_from_line(self, line: str):
-        """
-        STM32가 보내는 상태 문자열을 Python 내부 상태로 반영.
-        """
-        if not line:
-            return
-
-        if line == "READY":
-            self.state = "READY"
-            self.last_error = None
-            return
-
-        if line.startswith("MOVING:"):
-            self.state = "MOVING"
-
-            try:
-                self.current_tray = int(
-                    line.split(":", 1)[1]
-                )
-            except ValueError:
-                pass
-
-            return
-
-        if line.startswith("DONE:"):
-            self.state = "READY"
-
-            try:
-                self.current_tray = int(
-                    line.split(":", 1)[1]
-                )
-            except ValueError:
-                pass
-
-            return
-
-        if line == "HOME_DONE":
-            self.state = "READY"
-            self.current_tray = None
-            return
-
-        if line == "PAUSED":
-            self.state = "PAUSED"
-            return
-
-        if line == "RESUMED":
-            self.state = "MOVING"
-            return
-
-        if line == "STOPPED":
-            self.state = "STOPPED"
-            return
-
-        if line == "ESTOPPED":
-            self.state = "ESTOPPED"
-            return
-
-        if line.startswith("ERROR:"):
-            self.state = "ERROR"
-            self.last_error = line.split(
-                ":",
-                1,
-            )[1]
-            return
-
-        if line.startswith("POSITION:"):
-            # 예: POSITION:X=358,Z=126
-            try:
-                payload = line.split(":", 1)[1]
-
-                values = {}
-
-                for token in payload.split(","):
-                    key, value = token.split(
-                        "=",
-                        1,
-                    )
-                    values[key.strip()] = float(
-                        value.strip()
-                    )
-
-                if "X" in values:
-                    self.x = values["X"]
-
-                if "Z" in values:
-                    self.z = values["Z"]
-
-            except (
-                ValueError,
-                IndexError,
-            ):
-                pass
-
-            return
-
-        if line.startswith("LIMIT:"):
-            # 예:
-            # LIMIT:X_MIN=0,X_MAX=0,Z_MIN=1,Z_MAX=0
-            try:
-                payload = line.split(
-                    ":",
-                    1,
-                )[1]
-
-                for token in payload.split(","):
-                    key, value = token.split(
-                        "=",
-                        1,
-                    )
-
-                    key = key.strip()
-
-                    if key in self.limits:
-                        self.limits[key] = (
-                            value.strip() == "1"
-                        )
-
-            except (
-                ValueError,
-                IndexError,
-            ):
-                pass
-
-    def _wait_for(
+    def _send_expect(
         self,
-        success_prefixes: tuple[str, ...],
-        timeout: Optional[float] = None,
+        command: str,
+        success: str = "OK",
+        timeout: float = 2.0,
     ):
-        """
-        명령 전송 후 STM32의 완료/오류 응답을 기다린다.
 
-        ERROR:* 가 오면 즉시 실패.
-        success_prefixes 중 하나가 오면 성공.
-        """
-        deadline = time.monotonic() + (
-            timeout
-            if timeout is not None
-            else self.command_timeout
+        deadline = (
+            time.monotonic()
+            + timeout
         )
 
-        received = []
+        with self._io_lock:
 
-        while time.monotonic() < deadline:
-            line = self._read_line()
+            try:
 
-            if not line:
-                continue
+                self._write_line(
+                    command
+                )
 
-            received.append(line)
-            self._update_status_from_line(line)
+                received = []
 
-            if line.startswith("ERROR:"):
+                while (
+                    time.monotonic()
+                    <
+                    deadline
+                ):
+
+                    line = (
+                        self._read_line()
+                    )
+
+                    if not line:
+                        continue
+
+                    received.append(
+                        line
+                    )
+
+                    # 혹시 STATUS JSON이 섞여 들어온 경우
+                    if line.startswith(
+                        "{"
+                    ):
+
+                        self._consume_status_line(
+                            line
+                        )
+
+                        continue
+
+                    if line.startswith(
+                        "ERR"
+                    ):
+
+                        self.last_error = line
+
+                        return {
+                            "success": False,
+                            "message": line,
+                            "received": received,
+                        }
+
+                    if line.startswith(
+                        success
+                    ):
+
+                        self.last_error = None
+
+                        return {
+                            "success": True,
+                            "message": line,
+                            "received": received,
+                        }
+
+                self.last_error = (
+                    f"TIMEOUT: {command}"
+                )
+
                 return {
                     "success": False,
-                    "message": line,
-                    "received": received,
-                    "status": self.get_status(),
+                    "message":
+                        self.last_error,
+                    "received":
+                        received,
                 }
 
-            if any(
-                line.startswith(prefix)
-                for prefix
-                in success_prefixes
+            except Exception as exc:
+
+                self.last_error = str(
+                    exc
+                )
+
+                return {
+                    "success": False,
+                    "message": str(exc),
+                }
+
+    # ========================================================
+    # STATUS
+    # ========================================================
+
+    def _consume_status_line(
+        self,
+        line: str,
+    ):
+
+        payload = json.loads(
+            line
+        )
+
+        if (
+            payload.get("type")
+            !=
+            "status"
+        ):
+
+            raise ValueError(
+                "알 수 없는 STATUS JSON"
+            )
+
+        self._status["estop"] = bool(
+            payload.get(
+                "estop",
+                0,
+            )
+        )
+
+        for axis in (
+            "x",
+            "z",
+        ):
+
+            raw = payload.get(
+                axis,
+                {},
+            )
+
+            self._status[axis] = {
+                "mode":
+                    str(
+                        raw.get(
+                            "mode",
+                            "UNKNOWN",
+                        )
+                    ),
+
+                "pos_mm":
+                    float(
+                        raw.get(
+                            "pos_mm",
+                            0.0,
+                        )
+                    ),
+
+                "steps":
+                    int(
+                        raw.get(
+                            "steps",
+                            0,
+                        )
+                    ),
+
+                "hz":
+                    int(
+                        raw.get(
+                            "hz",
+                            0,
+                        )
+                    ),
+
+                "enabled":
+                    bool(
+                        raw.get(
+                            "enabled",
+                            0,
+                        )
+                    ),
+
+                "homed":
+                    bool(
+                        raw.get(
+                            "homed",
+                            0,
+                        )
+                    ),
+
+                "min":
+                    bool(
+                        raw.get(
+                            "min",
+                            0,
+                        )
+                    ),
+
+                "max":
+                    bool(
+                        raw.get(
+                            "max",
+                            0,
+                        )
+                    ),
+            }
+
+        return payload
+
+    def refresh_status(self):
+
+        deadline = (
+            time.monotonic()
+            + 2.0
+        )
+
+        with self._io_lock:
+
+            try:
+
+                self._write_line(
+                    "STATUS"
+                )
+
+                while (
+                    time.monotonic()
+                    <
+                    deadline
+                ):
+
+                    line = (
+                        self._read_line()
+                    )
+
+                    if not line:
+                        continue
+
+                    if line.startswith(
+                        "ERR"
+                    ):
+
+                        raise RuntimeError(
+                            line
+                        )
+
+                    if line.startswith(
+                        "{"
+                    ):
+
+                        self._consume_status_line(
+                            line
+                        )
+
+                        self._sync_state_name()
+
+                        self.last_error = None
+
+                        return (
+                            self._snapshot()
+                        )
+
+                raise TimeoutError(
+                    "STATUS 응답 시간 초과"
+                )
+
+            except Exception as exc:
+
+                self.last_error = str(
+                    exc
+                )
+
+                return (
+                    self._snapshot()
+                )
+
+    def _sync_state_name(self):
+
+        if self._status["estop"]:
+
+            self.state = "ESTOPPED"
+
+            return
+
+        modes = {
+            self._status["x"]["mode"],
+            self._status["z"]["mode"],
+        }
+
+        if "FAULT" in modes:
+
+            self.state = "ERROR"
+
+        elif any(
+            mode != "IDLE"
+            for mode in modes
+        ):
+
+            self.state = "MOVING"
+
+        elif self.paused:
+
+            self.state = "PAUSED"
+
+        else:
+
+            self.state = "READY"
+
+    def _snapshot(self):
+
+        x = self._status["x"]
+        z = self._status["z"]
+
+        return {
+            "connected":
+                bool(
+                    self._serial
+                    and
+                    self._serial.is_open
+                ),
+
+            "mock": False,
+
+            "state":
+                self.state,
+
+            "estop":
+                self._status["estop"],
+
+            "homed": {
+                "x": x["homed"],
+                "z": z["homed"],
+            },
+
+            "enabled": {
+                "x": x["enabled"],
+                "z": z["enabled"],
+            },
+
+            "current_tray":
+                self.current_tray,
+
+            "position": {
+                "x": x["pos_mm"],
+                "z": z["pos_mm"],
+            },
+
+            "mode": {
+                "x": x["mode"],
+                "z": z["mode"],
+            },
+
+            "limits": {
+                "X_MIN": x["min"],
+                "X_MAX": x["max"],
+                "Z_MIN": z["min"],
+                "Z_MAX": z["max"],
+            },
+
+            "current_target":
+                self.current_target,
+
+            "last_error":
+                self.last_error,
+        }
+
+    def get_status(self):
+
+        if (
+            self._serial
+            and
+            self._serial.is_open
+        ):
+
+            return (
+                self.refresh_status()
+            )
+
+        return self._snapshot()
+
+    # ========================================================
+    # HOME
+    # ========================================================
+
+    def _home_axis(
+        self,
+        axis: str,
+    ):
+
+        result = (
+            self._send_expect(
+                f"ENABLE {axis} 1"
+            )
+        )
+
+        if not result[
+            "success"
+        ]:
+            return result
+
+        result = (
+            self._send_expect(
+                f"HOME {axis}"
+            )
+        )
+
+        if not result[
+            "success"
+        ]:
+            return result
+
+        deadline = (
+            time.monotonic()
+            +
+            HOME_TIMEOUT_SEC
+        )
+
+        while (
+            time.monotonic()
+            <
+            deadline
+        ):
+
+            status = (
+                self.refresh_status()
+            )
+
+            axis_status = (
+                self._status[
+                    axis.lower()
+                ]
+            )
+
+            if (
+                status["estop"]
+                or
+                axis_status["mode"]
+                ==
+                "FAULT"
             ):
+
+                return {
+                    "success": False,
+                    "message":
+                        f"{axis} HOME 중 FAULT/ESTOP",
+                    "status":
+                        status,
+                }
+
+            if (
+                axis_status[
+                    "mode"
+                ]
+                ==
+                "IDLE"
+                and
+                axis_status[
+                    "homed"
+                ]
+            ):
+
                 return {
                     "success": True,
-                    "message": line,
-                    "received": received,
-                    "status": self.get_status(),
+                    "message":
+                        f"{axis} HOME 완료",
+                    "status":
+                        status,
                 }
 
-        self.state = "ERROR"
-        self.last_error = "TIMEOUT"
+            time.sleep(
+                STATUS_POLL_SEC
+            )
+
+        # TIMEOUT이면 HOME을 계속 두지 않고 즉시 HARD STOP
+        self._send_expect(
+            f"STOP {axis} HARD",
+            timeout=1.0,
+        )
+
+        self.last_error = (
+            f"{axis} HOME TIMEOUT"
+        )
 
         return {
             "success": False,
-            "message": "ERROR:TIMEOUT",
-            "received": received,
-            "status": self.get_status(),
+            "message":
+                self.last_error,
+            "status":
+                self.refresh_status(),
         }
 
-    def _command(
-        self,
-        command: str,
-        success_prefixes: tuple[str, ...],
-        timeout: Optional[float] = None,
-    ):
-        with self._lock:
-            try:
-                self._send_line(command)
+    def home(self):
 
-                return self._wait_for(
-                    success_prefixes,
-                    timeout=timeout,
+        with self._motion_lock:
+
+            self.paused = False
+            self.state = "HOMING"
+
+            # 기존 Mapping GUI와 동일하게 X -> Z 순차 HOME
+            for axis in (
+                "X",
+                "Z",
+            ):
+
+                result = (
+                    self._home_axis(
+                        axis
+                    )
                 )
 
-            except Exception as error:
-                self.state = "ERROR"
-                self.last_error = str(error)
+                if not result[
+                    "success"
+                ]:
+
+                    self.state = "ERROR"
+
+                    return result
+
+            self.current_tray = None
+            self.current_target = None
+
+            self.state = "READY"
+
+            return {
+                "success": True,
+                "message":
+                    "X/Z HOME 완료",
+                "status":
+                    self.refresh_status(),
+            }
+
+    # ========================================================
+    # 절대 목표좌표 -> STM 상대 MOVE
+    # ========================================================
+
+    def _move_axis(
+        self,
+        axis: str,
+        target_mm: float,
+    ):
+
+        status = (
+            self.refresh_status()
+        )
+
+        if not status[
+            "connected"
+        ]:
+
+            return {
+                "success": False,
+                "message":
+                    "STM32 Serial 연결이 없습니다.",
+            }
+
+        axis_status = (
+            self._status[
+                axis.lower()
+            ]
+        )
+
+        if status["estop"]:
+
+            return {
+                "success": False,
+                "message":
+                    "ESTOP 상태입니다.",
+            }
+
+        if not axis_status[
+            "homed"
+        ]:
+
+            return {
+                "success": False,
+                "message":
+                    f"{axis}축 HOME이 필요합니다.",
+            }
+
+        if (
+            axis_status["mode"]
+            !=
+            "IDLE"
+        ):
+
+            return {
+                "success": False,
+                "message":
+                    f"{axis}축이 "
+                    f"{axis_status['mode']} "
+                    "상태입니다.",
+            }
+
+        # 핵심:
+        # slot_map은 절대좌표,
+        # STM MOVE는 상대거리이므로 차이를 계산
+        delta = (
+            float(target_mm)
+            -
+            axis_status["pos_mm"]
+        )
+
+        if (
+            abs(delta)
+            <=
+            POSITION_TOLERANCE_MM
+        ):
+
+            return {
+                "success": True,
+                "message":
+                    f"{axis}축 이미 목표 위치",
+                "delta_mm": 0.0,
+                "status": status,
+            }
+
+        result = (
+            self._send_expect(
+                f"ENABLE {axis} 1"
+            )
+        )
+
+        if not result[
+            "success"
+        ]:
+            return result
+
+        profile = (
+            MOVE_PROFILE[axis]
+        )
+
+        command = (
+            f"MOVE {axis} "
+            f"{delta:.6g} "
+            f"{profile['speed']:.6g} "
+            f"{profile['accel']:.6g}"
+        )
+
+        result = (
+            self._send_expect(
+                command
+            )
+        )
+
+        if not result[
+            "success"
+        ]:
+            return result
+
+        deadline = (
+            time.monotonic()
+            +
+            MOVE_TIMEOUT_SEC
+        )
+
+        seen_busy = False
+
+        while (
+            time.monotonic()
+            <
+            deadline
+        ):
+
+            status = (
+                self.refresh_status()
+            )
+
+            axis_status = (
+                self._status[
+                    axis.lower()
+                ]
+            )
+
+            mode = (
+                axis_status["mode"]
+            )
+
+            reached = (
+                abs(
+                    axis_status[
+                        "pos_mm"
+                    ]
+                    -
+                    target_mm
+                )
+                <=
+                POSITION_TOLERANCE_MM
+            )
+
+            if (
+                status["estop"]
+                or
+                mode == "FAULT"
+            ):
 
                 return {
                     "success": False,
-                    "message": str(error),
-                    "status": self.get_status(),
+                    "message":
+                        f"{axis} 이동 중 FAULT/ESTOP",
+                    "status":
+                        status,
                 }
 
-    # ========================================================
-    # StageAdapter 역할
-    # ========================================================
+            if mode != "IDLE":
+                seen_busy = True
 
-    def home(self):
-        """
-        Python은 HOME만 요청.
-        실제 원점 탐색 / 리밋 스위치 처리 / 모터 정지는 STM32가 담당.
-        """
-        self.state = "HOMING"
+            if (
+                mode == "IDLE"
+                and
+                reached
+            ):
 
-        return self._command(
-            "HOME",
-            ("HOME_DONE",),
-            timeout=30.0,
+                return {
+                    "success": True,
+                    "message":
+                        f"{axis} 이동 완료",
+                    "target_mm":
+                        target_mm,
+                    "delta_mm":
+                        delta,
+                    "status":
+                        status,
+                }
+
+            # 움직였다가 IDLE이 됐는데 목표에 못 갔으면
+            # 리밋/정지 등의 비정상 종료로 판단
+            if (
+                mode == "IDLE"
+                and
+                seen_busy
+                and
+                not reached
+            ):
+
+                self.last_error = (
+                    f"{axis} 목표 미도달: "
+                    f"target={target_mm:.4f}, "
+                    f"reported="
+                    f"{axis_status['pos_mm']:.4f}"
+                )
+
+                return {
+                    "success": False,
+                    "message":
+                        self.last_error,
+                    "status":
+                        status,
+                }
+
+            time.sleep(
+                STATUS_POLL_SEC
+            )
+
+        # 이동 timeout 시에도 HARD STOP
+        self._send_expect(
+            f"STOP {axis} HARD",
+            timeout=1.0,
         )
 
-    def move_to_tray(self, tray_id: int):
-        """
-        특정 Tray로 이동.
+        self.last_error = (
+            f"{axis} MOVE TIMEOUT"
+        )
 
-        Python은 Tray ID만 전달하고,
-        Tray 좌표 / 가감속 / 리밋 감시는 STM32에서 처리하는 구조를 권장.
-        """
-        if tray_id not in range(1, 7):
+        return {
+            "success": False,
+            "message":
+                self.last_error,
+            "status":
+                self.refresh_status(),
+        }
+
+    def _move_to_position(
+        self,
+        x_mm: float,
+        z_mm: float,
+    ):
+
+        # 기존 매핑 GUI와 동일하게 X -> Z
+        for axis, target in (
+            ("X", x_mm),
+            ("Z", z_mm),
+        ):
+
+            result = (
+                self._move_axis(
+                    axis,
+                    target,
+                )
+            )
+
+            if not result[
+                "success"
+            ]:
+                return result
+
+        return {
+            "success": True,
+            "message":
+                "X/Z 목표좌표 이동 완료",
+            "status":
+                self.refresh_status(),
+        }
+
+    def move_to_tray(
+        self,
+        tray_id: int,
+    ):
+
+        # 우리가 앞 단계에서 만든
+        # Tray -> Slot -> X/Z 변환
+        target = (
+            resolve_tray_target(
+                tray_id
+            )
+        )
+
+        if not target.get(
+            "success"
+        ):
+
+            self.last_error = (
+                target.get(
+                    "message"
+                )
+            )
+
             return {
-                "success": False,
-                "message": (
-                    f"잘못된 Tray ID: {tray_id}"
-                ),
-                "status": self.get_status(),
+                **target,
+                "status":
+                    self.get_status(),
             }
 
-        self.state = "MOVING"
+        with self._motion_lock:
 
-        return self._command(
-            f"MOVE:{tray_id}",
-            (f"DONE:{tray_id}",),
-        )
+            self.paused = False
+
+            self.current_target = (
+                target
+            )
+
+            self.state = "MOVING"
+
+            result = (
+                self._move_to_position(
+                    target["x_mm"],
+                    target["z_mm"],
+                )
+            )
+
+            if not result[
+                "success"
+            ]:
+
+                self.state = "ERROR"
+
+                return {
+                    **result,
+                    "tray_id":
+                        tray_id,
+                    "target":
+                        target,
+                }
+
+            self.current_tray = (
+                tray_id
+            )
+
+            self.state = "READY"
+            self.last_error = None
+
+            return {
+                "success": True,
+
+                "message":
+                    (
+                        f"TRAY "
+                        f"{tray_id:02d} "
+                        f"-> Slot "
+                        f"{target['slot_number']} "
+                        "이동 완료"
+                    ),
+
+                "tray_id":
+                    tray_id,
+
+                "target":
+                    target,
+
+                "status":
+                    result["status"],
+            }
+
+    # ========================================================
+    # STOP / PAUSE / ESTOP
+    # ========================================================
 
     def pause(self):
-        return self._command(
-            "PAUSE",
-            ("PAUSED",),
-            timeout=3.0,
+
+        result = (
+            self._send_expect(
+                "STOP ALL SOFT",
+                timeout=2.0,
+            )
         )
+
+        if result[
+            "success"
+        ]:
+
+            self.paused = True
+            self.state = "PAUSED"
+
+        return {
+            **result,
+            "status":
+                self.refresh_status(),
+        }
 
     def resume(self):
-        return self._command(
-            "RESUME",
-            ("RESUMED", "MOVING:"),
-            timeout=3.0,
-        )
+
+        if (
+            not self.paused
+            or
+            not self.current_target
+        ):
+
+            return {
+                "success": False,
+                "message":
+                    "재개할 목표가 없습니다.",
+                "status":
+                    self.get_status(),
+            }
+
+        with self._motion_lock:
+
+            self.paused = False
+            self.state = "MOVING"
+
+            result = (
+                self._move_to_position(
+                    self.current_target[
+                        "x_mm"
+                    ],
+                    self.current_target[
+                        "z_mm"
+                    ],
+                )
+            )
+
+            if result[
+                "success"
+            ]:
+
+                self.state = "READY"
+
+            else:
+
+                self.state = "ERROR"
+
+            return result
 
     def stop(self):
-        """
-        정상 정지.
-        현재 위치를 유지할지, 감속 정지할지는 STM32 구현에서 결정.
-        """
-        return self._command(
-            "STOP",
-            ("STOPPED",),
-            timeout=3.0,
+
+        # UI의 일반 STOP도 현재 프로젝트에서는
+        # 안전하게 HARD STOP 사용
+        result = (
+            self._send_expect(
+                "STOP ALL HARD",
+                timeout=2.0,
+            )
         )
+
+        self.paused = False
+
+        if result[
+            "success"
+        ]:
+
+            self.state = "STOPPED"
+
+        return {
+            **result,
+            "status":
+                self.refresh_status(),
+        }
 
     def emergency_stop(self):
-        """
-        비상 정지.
-        실제 비상정지는 하드웨어 차원의 안전회로/STM32 처리가 우선.
-        Python 명령은 보조 제어 채널로 봐야 한다.
-        """
-        return self._command(
-            "ESTOP",
-            ("ESTOPPED",),
-            timeout=2.0,
+
+        result = (
+            self._send_expect(
+                "ESTOP",
+                success="OK ESTOP",
+                timeout=2.0,
+            )
         )
 
+        self.paused = False
+
+        if result[
+            "success"
+        ]:
+
+            self.state = "ESTOPPED"
+
+        return {
+            **result,
+            "status":
+                self.refresh_status(),
+        }
+
     def reset_error(self):
-        """
-        ERROR 상태 해제 요청.
-        STM32가 안전 조건을 확인한 뒤 READY를 반환해야 한다.
-        """
-        return self._command(
-            "RESET_ERROR",
-            ("READY",),
-            timeout=5.0,
+
+        result = (
+            self._send_expect(
+                "RESET",
+                timeout=2.0,
+            )
         )
+
+        if result[
+            "success"
+        ]:
+
+            self.current_tray = None
+            self.current_target = None
+            self.paused = False
+
+            self.state = "CONNECTED"
+
+        return {
+            **result,
+            "status":
+                self.refresh_status(),
+        }
 
     def reset_for_retry(
         self,
         use_home: bool = True,
     ):
-        """
-        '현재 단계 다시 시작'용 복구 함수.
 
-        기본 권장:
-            STOP
-            -> HOME
-            -> READY
+        result = self.stop()
 
-        실제 장비에서 HOME이 위험하거나 불필요한 상황이 있다면
-        STM 담당자와 협의해 use_home=False 또는 별도 복구 명령으로 변경.
-
-        중요:
-        오류 상태에서 자동 HOME을 무조건 실행하면 안 되는 장비라면,
-        이 함수 내부 정책을 반드시 실제 기구 안전 요구사항에 맞게 변경.
-        """
-        stop_result = self.stop()
-
-        if not stop_result.get("success"):
-            return {
-                "success": False,
-                "step": "STOP",
-                "result": stop_result,
-            }
+        if not result[
+            "success"
+        ]:
+            return result
 
         if use_home:
-            home_result = self.home()
-
-            if not home_result.get("success"):
-                return {
-                    "success": False,
-                    "step": "HOME",
-                    "result": home_result,
-                }
+            return self.home()
 
         return {
             "success": True,
-            "message": "RETRY_READY",
-            "status": self.get_status(),
+            "message":
+                "RETRY_READY",
+            "status":
+                self.refresh_status(),
         }
-
-    def get_status(self):
-        """
-        현재 Python이 알고 있는 Stage 상태.
-
-        필요하면 STATUS 명령을 보내 최신 정보를 받아오도록
-        별도 refresh_status()를 호출할 수 있다.
-        """
-        return {
-            "connected": bool(
-                self._serial
-                and self._serial.is_open
-            ),
-            "state": self.state,
-            "current_tray": self.current_tray,
-            "position": {
-                "x": self.x,
-                "z": self.z,
-            },
-            "limits": dict(self.limits),
-            "last_error": self.last_error,
-        }
-
-    def refresh_status(self):
-        """
-        STM32에 현재 상태를 요청.
-
-        STM32는 STATUS 요청 뒤 최소한 아래 중 필요한 값을 보내는 것을 권장:
-            READY / MOVING:n / PAUSED / STOPPED / ERROR:...
-            POSITION:X=...,Z=...
-            LIMIT:X_MIN=...,X_MAX=...,Z_MIN=...,Z_MAX=...
-            STATUS_DONE
-        """
-        with self._lock:
-            try:
-                self._send_line("STATUS")
-
-                return self._wait_for(
-                    ("STATUS_DONE",),
-                    timeout=2.0,
-                )
-
-            except Exception as error:
-                self.state = "ERROR"
-                self.last_error = str(error)
-
-                return {
-                    "success": False,
-                    "message": str(error),
-                    "status": self.get_status(),
-                }
