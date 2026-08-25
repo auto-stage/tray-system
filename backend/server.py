@@ -14,6 +14,7 @@ from services.work_history import (
 )
 
 from adapters.mock_stage_adapter import MockStageAdapter
+from adapters.stm32_stage_adapter import STM32StageAdapter
 from adapters.mock_vision_adapter import MockVisionAdapter
 from workflow.workflow_controller import WorkflowController
 from parts_db import find_part
@@ -24,6 +25,7 @@ import subprocess
 import sys
 from pathlib import Path
 import shutil
+import os
 
 
 # ============================================================
@@ -78,7 +80,35 @@ app.add_middleware(
 # 로 교체하면 됨.
 # ============================================================
 
-stage = MockStageAdapter()
+STAGE_MODE = os.getenv(
+    "STAGE_MODE",
+    "mock",
+).strip().lower()
+
+if STAGE_MODE == "stm32":
+
+    stage = STM32StageAdapter(
+        port=(
+            os.getenv(
+                "STAGE_SERIAL_PORT"
+            )
+            or None
+        ),
+        baudrate=115200,
+    )
+
+    print(
+        "[STAGE] 실제 STM32 모드"
+    )
+
+else:
+
+    stage = MockStageAdapter()
+
+    print(
+        "[STAGE] MOCK 모드"
+    )
+
 vision = MockVisionAdapter()
 workflow = WorkflowController()
 
