@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -486,6 +487,85 @@ class ArucoVisionAdapter(VisionAdapter):
             )
 
         return base_result
+
+    def get_jpeg_frame(
+        self,
+        jpeg_quality: int = 85,
+    ) -> bytes | None:
+        """
+        Return one JPEG-encoded frame from the same camera used by ArUco.
+
+        The camera is owned by this adapter so UI preview and ArUco detection
+        do not open competing VideoCapture instances.
+        """
+        frame = self._read_frame()
+
+        if frame is None:
+            return None
+
+        quality = max(
+            40,
+            min(
+                int(jpeg_quality),
+                95,
+            ),
+        )
+
+        ok, encoded = cv2.imencode(
+            ".jpg",
+            frame,
+            [
+                int(cv2.IMWRITE_JPEG_QUALITY),
+                quality,
+            ],
+        )
+
+        if not ok:
+            self._last_error = "카메라 프레임 JPEG 인코딩에 실패했습니다."
+            return None
+
+        return encoded.tobytes()
+
+    def iter_mjpeg(
+        self,
+        jpeg_quality: int = 80,
+        max_fps: float = 20.0,
+    ):
+        """
+        MJPEG stream generator for the FastAPI UI preview endpoint.
+        """
+        frame_interval = 1.0 / max(
+            1.0,
+            float(max_fps),
+        )
+
+        while True:
+            started = time.monotonic()
+
+            jpeg = self.get_jpeg_frame(
+                jpeg_quality=jpeg_quality
+            )
+
+            if jpeg is not None:
+                yield (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n"
+                    b"Cache-Control: no-cache\r\n"
+                    b"\r\n"
+                    + jpeg
+                    + b"\r\n"
+                )
+
+            elapsed = (
+                time.monotonic()
+                - started
+            )
+
+            if elapsed < frame_interval:
+                time.sleep(
+                    frame_interval
+                    - elapsed
+                )
 
     def get_camera_status(self):
         with self._camera_lock:

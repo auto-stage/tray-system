@@ -1,5 +1,6 @@
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from services.relocation import build_relocation_plan
@@ -914,6 +915,70 @@ def vision_status():
 
     return (
         aruco_vision.get_camera_status()
+    )
+
+
+@app.get("/vision/stream")
+def vision_stream():
+
+    if not hasattr(
+        aruco_vision,
+        "iter_mjpeg",
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "실제 ArUco 카메라 모드에서만 "
+                "영상 스트림을 사용할 수 있습니다."
+            ),
+        )
+
+    return StreamingResponse(
+        aruco_vision.iter_mjpeg(),
+        media_type=(
+            "multipart/x-mixed-replace; "
+            "boundary=frame"
+        ),
+        headers={
+            "Cache-Control": (
+                "no-store, no-cache, "
+                "must-revalidate"
+            ),
+        },
+    )
+
+
+@app.get("/vision/snapshot")
+def vision_snapshot():
+
+    if not hasattr(
+        aruco_vision,
+        "get_jpeg_frame",
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "실제 ArUco 카메라 모드에서만 "
+                "스냅샷을 사용할 수 있습니다."
+            ),
+        )
+
+    jpeg = aruco_vision.get_jpeg_frame(
+        jpeg_quality=90
+    )
+
+    if jpeg is None:
+        raise HTTPException(
+            status_code=503,
+            detail="카메라 프레임을 읽지 못했습니다.",
+        )
+
+    return Response(
+        content=jpeg,
+        media_type="image/jpeg",
+        headers={
+            "Cache-Control": "no-store",
+        },
     )
 
 
