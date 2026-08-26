@@ -109,7 +109,51 @@ else:
         "[STAGE] MOCK 모드"
     )
 
-vision = MockVisionAdapter()
+# 부품 수량 검사용 Vision
+# 현재 최신 브랜치의 기존 동작을 유지하기 위해 Mock을 그대로 사용한다.
+count_vision = MockVisionAdapter()
+
+# Tray ArUco 검출용 Vision
+VISION_MODE = os.getenv(
+    "VISION_MODE",
+    "mock",
+).strip().lower()
+
+if VISION_MODE == "aruco":
+
+    # 실제 ArUco 모드에서만 의존성을 불러온다.
+    from adapters.aruco_vision_adapter import ArucoVisionAdapter
+
+    camera_index_raw = os.getenv(
+        "VISION_CAMERA_INDEX"
+    )
+
+    aruco_vision = ArucoVisionAdapter(
+        camera_index=(
+            int(camera_index_raw)
+            if camera_index_raw is not None
+            else None
+        ),
+        camera_profile=(
+            os.getenv(
+                "VISION_CAMERA_PROFILE"
+            )
+            or None
+        ),
+    )
+
+    print(
+        "[VISION] 실제 ArUco 모드"
+    )
+
+else:
+
+    aruco_vision = MockVisionAdapter()
+
+    print(
+        "[VISION] MOCK 모드"
+    )
+
 workflow = WorkflowController()
 
 
@@ -869,7 +913,7 @@ class VisionCountRequest(
 def vision_status():
 
     return (
-        vision.get_camera_status()
+        aruco_vision.get_camera_status()
     )
 
 
@@ -880,7 +924,7 @@ def vision_count(
 ):
 
     return (
-        vision.detect_part_count(
+        count_vision.detect_part_count(
             part_no=
                 request.part_no,
             expected_quantity=
@@ -890,10 +934,15 @@ def vision_count(
 
 
 @app.get("/vision/aruco")
-def vision_aruco():
+def vision_aruco(
+    expected_tray_id: int | None = None,
+):
 
     return (
-        vision.detect_tray_aruco()
+        aruco_vision.detect_tray_aruco(
+            expected_tray_id=
+                expected_tray_id
+        )
     )
 
 

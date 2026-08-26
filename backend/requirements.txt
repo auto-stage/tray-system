@@ -8,3 +8,7 @@ Pillow
 rapidfuzz
 PyMuPDF
 pyserial
+
+# ArUco backend integration
+opencv-contrib-python>=4.9
+PyYAML>=6.0

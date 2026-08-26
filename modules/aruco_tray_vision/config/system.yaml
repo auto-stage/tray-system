@@ -1,24 +1,42 @@
 aruco_dictionary: "DICT_4X4_50"
 
 pose_limits:
-  # Provisional values. Tune from real gripper/tray tolerance tests.
+  # Provisional safety/tolerance values.
+  # Replace only after real gripper/tray tolerance verification.
   roll_abs_max_deg: 180.0
   pitch_abs_max_deg: 30.0
   yaw_abs_max_deg: 30.0
 
 integration:
+  # Keep this undecided until the physical camera installation is fixed.
   camera_mount_mode: "UNDECIDED"  # EYE_IN_HAND or FIXED_OVERHEAD
 
-  # Must be calibrated after camera and stage are physically fixed.
   camera_to_stage:
+    # PLACEHOLDER ONLY.
+    # Identity matrix keeps the software/config structure complete before
+    # installation. Because calibrated=false, backend MUST NOT use it for
+    # real stage correction.
     calibrated: false
-    matrix_4x4: null
+    matrix_4x4:
+      - [1.0, 0.0, 0.0, 0.0]
+      - [0.0, 1.0, 0.0, 0.0]
+      - [0.0, 0.0, 1.0, 0.0]
+      - [0.0, 0.0, 0.0, 1.0]
 
-  # Map stage-frame XYZ to the two physical stage axes after hardware is known.
-  # Example only; actual system may be X/Z rather than X/Y.
+  # Physical stage is two-axis X/Z in the current integration branch.
   stage_axis_mapping:
     axis1: "x"
-    axis2: "y"
+    axis2: "z"
 
+  # Backend uses TRAY 01~06. Existing ArUco definitions currently contain
+  # marker IDs 1~4, therefore those are mapped 1:1 here.
+  # Add 5/6 only after their real marker/tray geometry is registered.
+  tray_id_mapping:
+    1: 1
+    2: 2
+    3: 3
+    4: 4
+
+  # Reserved for future hardware integration.
   camera_to_gripper_tcp_mm: null
   stage_feedback_source: null

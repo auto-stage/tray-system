@@ -17,16 +17,24 @@ class MockVisionAdapter(VisionAdapter):
             "matched": True
         }
 
-
     def detect_tray_aruco(
-        self
+        self,
+        expected_tray_id: int | None = None,
     ):
+        tray_id = (
+            int(expected_tray_id)
+            if expected_tray_id is not None
+            else 1
+        )
+
         return {
             "success": True,
             "mock": True,
             "detected": True,
-            "tray_id": 1,
-            "aruco_id": 1
+            "tray_id": tray_id,
+            "tray_label": f"TRAY {tray_id:02d}",
+            "aruco_id": tray_id,
+            "matched_expected_tray": True,
         }
 
 
@@ -35,5 +43,6 @@ class MockVisionAdapter(VisionAdapter):
     ):
         return {
             "connected": False,
-            "mock": Trues
+            "mock": True,
+            "mode": "mock",
         }
