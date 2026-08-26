@@ -910,6 +910,13 @@ class VisionCountRequest(
     expected_quantity: int
 
 
+class CameraSelectRequest(
+    BaseModel
+):
+    profile_name: str
+    camera_index: int | None = None
+
+
 @app.get("/vision/status")
 def vision_status():
 
@@ -919,7 +926,9 @@ def vision_status():
 
 
 @app.get("/vision/stream")
-def vision_stream():
+def vision_stream(
+    annotate: bool = True,
+):
 
     if not hasattr(
         aruco_vision,
@@ -934,7 +943,9 @@ def vision_stream():
         )
 
     return StreamingResponse(
-        aruco_vision.iter_mjpeg(),
+        aruco_vision.iter_mjpeg(
+            annotate=annotate,
+        ),
         media_type=(
             "multipart/x-mixed-replace; "
             "boundary=frame"
@@ -949,7 +960,9 @@ def vision_stream():
 
 
 @app.get("/vision/snapshot")
-def vision_snapshot():
+def vision_snapshot(
+    annotate: bool = True,
+):
 
     if not hasattr(
         aruco_vision,
@@ -964,7 +977,8 @@ def vision_snapshot():
         )
 
     jpeg = aruco_vision.get_jpeg_frame(
-        jpeg_quality=90
+        jpeg_quality=90,
+        annotate=annotate,
     )
 
     if jpeg is None:
@@ -980,6 +994,157 @@ def vision_snapshot():
             "Cache-Control": "no-store",
         },
     )
+
+
+@app.get("/vision/camera/profiles")
+def vision_camera_profiles():
+
+    if not hasattr(
+        aruco_vision,
+        "list_camera_profiles",
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "실제 ArUco 카메라 모드에서만 "
+                "카메라 설정을 사용할 수 있습니다."
+            ),
+        )
+
+    return (
+        aruco_vision.list_camera_profiles()
+    )
+
+
+@app.post("/vision/camera/select")
+def vision_camera_select(
+    request:
+        CameraSelectRequest
+):
+
+    if not hasattr(
+        aruco_vision,
+        "select_camera",
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "실제 ArUco 카메라 모드에서만 "
+                "카메라 설정을 사용할 수 있습니다."
+            ),
+        )
+
+    try:
+        return (
+            aruco_vision.select_camera(
+                profile_name=
+                    request.profile_name,
+                camera_index=
+                    request.camera_index,
+            )
+        )
+    except (
+        ValueError,
+        FileNotFoundError,
+    ) as error:
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        ) from error
+
+
+@app.get("/vision/calibration/status")
+def vision_calibration_status():
+
+    if not hasattr(
+        aruco_vision,
+        "get_calibration_status",
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "실제 ArUco 카메라 모드에서만 "
+                "캘리브레이션을 사용할 수 있습니다."
+            ),
+        )
+
+    return (
+        aruco_vision.get_calibration_status()
+    )
+
+
+@app.post("/vision/calibration/sample")
+def vision_calibration_sample():
+
+    if not hasattr(
+        aruco_vision,
+        "add_calibration_sample",
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "실제 ArUco 카메라 모드에서만 "
+                "캘리브레이션을 사용할 수 있습니다."
+            ),
+        )
+
+    result = (
+        aruco_vision.add_calibration_sample()
+    )
+
+    if not result.get(
+        "success",
+        False,
+    ):
+        return result
+
+    return result
+
+
+@app.post("/vision/calibration/clear")
+def vision_calibration_clear():
+
+    if not hasattr(
+        aruco_vision,
+        "clear_calibration_samples",
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "실제 ArUco 카메라 모드에서만 "
+                "캘리브레이션을 사용할 수 있습니다."
+            ),
+        )
+
+    return (
+        aruco_vision.clear_calibration_samples()
+    )
+
+
+@app.post("/vision/calibration/run")
+def vision_calibration_run():
+
+    if not hasattr(
+        aruco_vision,
+        "run_intrinsic_calibration",
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "실제 ArUco 카메라 모드에서만 "
+                "캘리브레이션을 사용할 수 있습니다."
+            ),
+        )
+
+    try:
+        return (
+            aruco_vision.run_intrinsic_calibration()
+        )
+    except RuntimeError as error:
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        ) from error
 
 
 @app.post("/vision/count")

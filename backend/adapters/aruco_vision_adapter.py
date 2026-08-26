@@ -25,6 +25,7 @@ ARUCO_MODULE_ROOT = REPO_ROOT / "modules" / "aruco_tray_vision"
 if str(ARUCO_MODULE_ROOT) not in sys.path:
     sys.path.insert(0, str(ARUCO_MODULE_ROOT))
 
+from aruco_tray.calibration import ChessboardCalibrator  # noqa: E402
 from aruco_tray.config import load_trays, load_yaml  # noqa: E402
 from aruco_tray.controller import build_vision_decision  # noqa: E402
 from aruco_tray.vision import ArucoVision  # noqa: E402
@@ -97,6 +98,15 @@ class ArucoVisionAdapter(VisionAdapter):
         self._camera: cv2.VideoCapture | None = None
         self._camera_lock = threading.Lock()
         self._last_error: str | None = None
+
+        # 기존 calibration.py의 ChessboardCalibrator를 Backend에서도 재사용.
+        # 기본값은 기존 코드와 동일한 9x6 inner corners / 25 mm square.
+        self._calibrator = ChessboardCalibrator(
+            inner_cols=9,
+            inner_rows=6,
+            square_mm=25.0,
+        )
+        self._calibration_lock = threading.Lock()
 
         integration = self.system.get("integration", {})
         self.stage_axis_mapping = integration.get(
@@ -257,6 +267,290 @@ class ArucoVisionAdapter(VisionAdapter):
                 "source_axis": axis2_name,
                 "target_mm": float(target[_AXIS_INDEX[axis2_name]]),
             },
+        }
+
+    def list_camera_profiles(self) -> dict[str, Any]:
+        profiles: list[dict[str, Any]] = []
+
+        for path in sorted(
+            self.config_dir.glob("camera_*.yaml")
+        ):
+            try:
+                cfg = load_yaml(path)
+            except Exception as error:
+                profiles.append(
+                    {
+                        "file": path.name,
+                        "error": str(error),
+                    }
+                )
+                continue
+
+            profiles.append(
+                {
+                    "file": path.name,
+                    "camera_name": str(
+                        cfg.get(
+                            "camera_name",
+                            path.stem,
+                        )
+                    ),
+                    "camera_index_hint": int(
+                        cfg.get(
+                            "camera_index_hint",
+                            0,
+                        )
+                    ),
+                    "calibrated": bool(
+                        cfg.get(
+                            "calibrated",
+                            False,
+                        )
+                    ),
+                    "image_width": cfg.get(
+                        "image_width"
+                    ),
+                    "image_height": cfg.get(
+                        "image_height"
+                    ),
+                    "rms_reprojection_error": cfg.get(
+                        "rms_reprojection_error"
+                    ),
+                    "selected": (
+                        path.resolve()
+                        == self.camera_profile.resolve()
+                    ),
+                }
+            )
+
+        return {
+            "success": True,
+            "camera_index": self.camera_index,
+            "camera_profile": self.camera_profile.name,
+            "profiles": profiles,
+        }
+
+    def select_camera(
+        self,
+        profile_name: str,
+        camera_index: int | None = None,
+    ) -> dict[str, Any]:
+        # 파일명만 허용하여 config 디렉터리 밖 접근을 막는다.
+        safe_name = Path(
+            str(profile_name)
+        ).name
+
+        if (
+            safe_name != str(profile_name)
+            or not safe_name.startswith("camera_")
+            or not safe_name.endswith(".yaml")
+        ):
+            raise ValueError(
+                "camera_*.yaml 형식의 프로파일만 선택할 수 있습니다."
+            )
+
+        profile_path = (
+            self.config_dir
+            / safe_name
+        ).resolve()
+
+        if not profile_path.is_file():
+            raise FileNotFoundError(
+                f"카메라 프로파일을 찾을 수 없습니다: {safe_name}"
+            )
+
+        cfg = load_yaml(profile_path)
+
+        next_index = (
+            int(camera_index)
+            if camera_index is not None
+            else int(
+                cfg.get(
+                    "camera_index_hint",
+                    0,
+                )
+            )
+        )
+
+        # 스트림과 ArUco가 같은 VideoCapture를 공유하므로
+        # 소스 변경 시 기존 카메라를 먼저 안전하게 닫는다.
+        with self._camera_lock:
+            if self._camera is not None:
+                self._camera.release()
+                self._camera = None
+
+            self.camera_index = next_index
+            self.camera_profile = profile_path
+            self._last_error = None
+
+        self.vision.set_camera_profile(
+            self.camera_profile
+        )
+
+        with self._calibration_lock:
+            self._calibrator.clear()
+
+        return {
+            "success": True,
+            "message": "카메라 설정을 적용했습니다.",
+            "camera_index": self.camera_index,
+            "camera_profile": self.camera_profile.name,
+            "camera_calibrated": bool(
+                self.vision.calibrated
+            ),
+        }
+
+    def get_calibration_status(
+        self,
+    ) -> dict[str, Any]:
+        try:
+            cfg = load_yaml(
+                self.camera_profile
+            )
+        except Exception:
+            cfg = {}
+
+        with self._calibration_lock:
+            sample_count = (
+                self._calibrator.sample_count
+            )
+            inner_cols = (
+                self._calibrator.inner_cols
+            )
+            inner_rows = (
+                self._calibrator.inner_rows
+            )
+            square_mm = (
+                self._calibrator.square_mm
+            )
+
+        return {
+            "success": True,
+            "camera_profile": self.camera_profile.name,
+            "camera_index": self.camera_index,
+            "calibrated": bool(
+                self.vision.calibrated
+            ),
+            "sample_count": sample_count,
+            "minimum_samples": 10,
+            "pattern": {
+                "inner_cols": inner_cols,
+                "inner_rows": inner_rows,
+                "square_mm": float(
+                    square_mm
+                ),
+            },
+            "image_width": cfg.get(
+                "image_width"
+            ),
+            "image_height": cfg.get(
+                "image_height"
+            ),
+            "rms_reprojection_error": cfg.get(
+                "rms_reprojection_error"
+            ),
+        }
+
+    def add_calibration_sample(
+        self,
+    ) -> dict[str, Any]:
+        frame = self._read_frame()
+
+        if frame is None:
+            return {
+                "success": False,
+                "found": False,
+                "sample_count": (
+                    self._calibrator.sample_count
+                ),
+                "message": (
+                    self._last_error
+                    or "카메라 프레임을 읽지 못했습니다."
+                ),
+            }
+
+        with self._calibration_lock:
+            found = (
+                self._calibrator.add_sample(
+                    frame
+                )
+            )
+            sample_count = (
+                self._calibrator.sample_count
+            )
+
+        return {
+            "success": bool(found),
+            "found": bool(found),
+            "sample_count": sample_count,
+            "minimum_samples": 10,
+            "message": (
+                "체커보드 샘플을 추가했습니다."
+                if found
+                else (
+                    "9x6 체커보드를 검출하지 못했습니다. "
+                    "각도/거리/조명을 바꿔 다시 시도하세요."
+                )
+            ),
+        }
+
+    def clear_calibration_samples(
+        self,
+    ) -> dict[str, Any]:
+        with self._calibration_lock:
+            self._calibrator.clear()
+
+        return {
+            "success": True,
+            "sample_count": 0,
+            "message": "캘리브레이션 샘플을 초기화했습니다.",
+        }
+
+    def run_intrinsic_calibration(
+        self,
+    ) -> dict[str, Any]:
+        try:
+            current_cfg = load_yaml(
+                self.camera_profile
+            )
+        except Exception:
+            current_cfg = {}
+
+        camera_name = str(
+            current_cfg.get(
+                "camera_name",
+                self.camera_profile.stem,
+            )
+        )
+
+        with self._calibration_lock:
+            rms = (
+                self._calibrator.calibrate_and_save(
+                    path=self.camera_profile,
+                    camera_name=camera_name,
+                    camera_index=self.camera_index,
+                )
+            )
+
+        # 저장 직후 기존 ArucoVision 객체가 새 Intrinsic을 다시 읽는다.
+        self.vision.set_camera_profile(
+            self.camera_profile
+        )
+
+        return {
+            "success": True,
+            "message": "카메라 Intrinsic 캘리브레이션을 저장했습니다.",
+            "camera_profile": self.camera_profile.name,
+            "camera_index": self.camera_index,
+            "camera_calibrated": bool(
+                self.vision.calibrated
+            ),
+            "rms_reprojection_error": float(
+                rms
+            ),
+            "sample_count": (
+                self._calibrator.sample_count
+            ),
         }
 
     def detect_part_count(
@@ -491,6 +785,7 @@ class ArucoVisionAdapter(VisionAdapter):
     def get_jpeg_frame(
         self,
         jpeg_quality: int = 85,
+        annotate: bool = True,
     ) -> bytes | None:
         """
         Return one JPEG-encoded frame from the same camera used by ArUco.
@@ -502,6 +797,15 @@ class ArucoVisionAdapter(VisionAdapter):
 
         if frame is None:
             return None
+
+        if annotate:
+            observations = self.vision.detect(
+                frame
+            )
+            frame = self.vision.draw(
+                frame,
+                observations,
+            )
 
         quality = max(
             40,
@@ -530,6 +834,7 @@ class ArucoVisionAdapter(VisionAdapter):
         self,
         jpeg_quality: int = 80,
         max_fps: float = 20.0,
+        annotate: bool = True,
     ):
         """
         MJPEG stream generator for the FastAPI UI preview endpoint.
@@ -543,7 +848,8 @@ class ArucoVisionAdapter(VisionAdapter):
             started = time.monotonic()
 
             jpeg = self.get_jpeg_frame(
-                jpeg_quality=jpeg_quality
+                jpeg_quality=jpeg_quality,
+                annotate=annotate,
             )
 
             if jpeg is not None:
@@ -571,13 +877,26 @@ class ArucoVisionAdapter(VisionAdapter):
         with self._camera_lock:
             connected = self._ensure_camera_locked()
 
+        try:
+            profile_cfg = load_yaml(
+                self.camera_profile
+            )
+        except Exception:
+            profile_cfg = {}
+
         return {
             "connected": bool(connected),
             "mock": False,
             "mode": "aruco",
             "camera_index": self.camera_index,
             "camera_profile": str(self.camera_profile),
+            "camera_profile_name": self.camera_profile.name,
             "camera_calibrated": bool(self.vision.calibrated),
+            "image_width": profile_cfg.get("image_width"),
+            "image_height": profile_cfg.get("image_height"),
+            "rms_reprojection_error": profile_cfg.get(
+                "rms_reprojection_error"
+            ),
             "camera_to_stage_configured": self._extrinsic_configured(),
             "camera_to_stage_calibrated": self._extrinsic_calibrated(),
             "ready_for_stage_correction": bool(
