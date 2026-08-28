@@ -693,3 +693,254 @@ bd6a56c  add stage control and homing safety flow
 13. 속도 / 가속도 튜닝
 14. 전체 Workflow 실기 검증
 ```
+
+---
+
+## 2026-08-28 실제 Stage 매핑 및 Material Flow 통합
+
+### 1. X-Z Stage 최종 실측 매핑
+
+최종 선반 설치 위치를 기준으로 6개 물리 Slot의 X/Z 좌표를 직접 Teaching하였다.
+
+| Tray | Slot | Mapping Key | X (mm) | Z (mm) |
+|---|---:|---|---:|---:|
+| TRAY 01 | 5 | XC1ZR3 | 322.7781 | 0.7906 |
+| TRAY 02 | 6 | XC2ZR3 | 657.0219 | 0.7906 |
+| TRAY 03 | 3 | XC1ZR2 | 322.7563 | 210.1719 |
+| TRAY 04 | 4 | XC2ZR2 | 657.0219 | 206.2625 |
+| TRAY 05 | 1 | XC1ZR1 | 322.7563 | 416.8813 |
+| TRAY 06 | 2 | XC2ZR1 | 664.7531 | 416.2781 |
+
+기존의 X Column / Z Row 독립 조합 방식 대신,
+각 Slot의 실제 X/Z 좌표를 직접 사용하는 6점 매핑 방식으로 변경하였다.
+
+실제 STM32 Stage에서 6개 Tray 위치로 이동 시험을 수행하였으며,
+모든 위치에서 정상 이동을 확인하였다.
+
+실제 Teaching 시 사용한 물리 기준은 다음과 같다.
+
+- X축 기준: Z축 모터 박스의 오른쪽 측면
+- Z축 기준: Z축 모터 박스의 아래쪽 면
+
+향후 ArUco 보정 및 Gripper TCP Offset 적용 시 위 물리 기준을 고려해야 한다.
+
+
+### 2. Stage 실제 하드웨어 설정 및 검증
+
+STM32 Stage 통신 및 이동 설정은 다음과 같다.
+
+- USART: 115200 bps
+- X 이동 속도: 15 mm/s
+- Z 이동 속도: 15 mm/s
+- X/Z 가속도: 20 mm/s²
+- HOME Timeout: 60 s → 300 s
+- Z축 설치 방향에 맞게 DIR polarity 수정
+
+장거리 HOME 수행 시 기존 60초 제한으로 중간 정지하는 문제를 방지하기 위해
+Backend의 HOME Timeout을 300초로 변경하였다.
+
+실제 장비에서 다음 항목을 확인하였다.
+
+- X/Z HOME
+- X/Z Limit
+- HARD STOP
+- 6개 Tray Slot 실제 이동
+
+
+### 3. Conveyor Handoff 위치 추가
+
+Tray를 Conveyor에 전달하거나 반환 Tray를 받기 위한 시스템 위치를
+Tray Slot 좌표와 분리하여 관리하도록 구성하였다.
+
+추가 파일:
+
+`backend/data/system_positions.json`
+
+현재 임시 Conveyor Handoff 좌표:
+
+- X = 0.0000 mm
+- Z = 210.1719 mm
+
+Z 좌표는 현재 좌측 중단 Slot(XC1ZR2)의 높이를 기준으로 설정하였다.
+
+현재 값은 실제 Conveyor 설치 전 임시 위치이며,
+향후 Conveyor 설치 후 실제 전달 위치를 다시 Teaching하여 변경한다.
+
+
+### 4. Stage Handoff 이동 기능 추가
+
+다음 기능을 추가하였다.
+
+- `backend/adapters/system_position_resolver.py`
+- `StageAdapter.move_to_handoff()`
+- `MockStageAdapter.move_to_handoff()`
+- `STM32StageAdapter.move_to_handoff()`
+- `POST /stage/move-to-handoff`
+
+따라서 Stage는 Tray Slot뿐 아니라
+Conveyor Handoff 위치로도 절대좌표 이동할 수 있다.
+
+
+### 5. Stage 공급과 작업자 작업 병렬화
+
+기존 Workflow는 아래와 같은 직렬 구조였다.
+
+`TRAY 이동 → 작업자 Picking → Vision 검수 → Item Complete → 다음 TRAY 이동`
+
+이 구조에서는 작업자가 현재 Tray를 처리하는 동안
+Stage가 다음 Tray를 공급하지 못하고 대기하게 된다.
+
+신속한 Tray 공급을 위해 Stage Material Flow와
+작업자 Picking/검수 Workflow를 분리하였다.
+
+최종 공급 개념은 다음과 같다.
+
+`TRAY 이동 → ArUco 정렬 → Gripper 파지/인출 → Carriage Load Cell 확인 → Conveyor Handoff → 즉시 다음 Tray 공급`
+
+Conveyor는 여러 Tray를 순차적으로 수용할 수 있다고 가정하며,
+작업자는 이미 전달된 Tray를 Stage의 다음 공급 동작과 독립적으로 처리한다.
+
+
+### 6. MaterialFlowController 추가
+
+Stage의 Tray 공급 및 회수 흐름을 별도로 관리하기 위해
+다음 파일을 추가하였다.
+
+`backend/workflow/material_flow_controller.py`
+
+Material Flow는 기존 작업자 WorkflowController와 독립적으로 동작한다.
+
+Supply 주요 상태:
+
+- `TRAY_MOVING`
+- `ARUCO_ALIGN`
+- `EXTRACTING`
+- `HANDOFF_MOVING`
+- `SUPPLY_COMPLETE`
+
+Return 주요 상태:
+
+- `RETURN_WAIT`
+- `RETURN_PICKING`
+- `RETURNING_TO_SLOT`
+- `RETURN_INSERTING`
+- `RETURN_TO_HANDOFF`
+- `ALL_RETURNED`
+
+Supply Queue와 Return Queue를 별도로 관리하여
+Stage 공급/회수와 작업자 Picking/검수가 병렬적으로 진행될 수 있도록 구성하였다.
+
+
+### 7. 최종 Tray 공급 흐름
+
+예를 들어 작업지시서에서 TRAY 01과 TRAY 02가 필요한 경우:
+
+`TRAY 01 → Handoff → TRAY 02 → Handoff → SUPPLY_COMPLETE → RETURN_WAIT`
+
+각 Tray의 실제 공급 단계는 다음과 같다.
+
+`Tray Slot 이동 → ArUco 미세 정렬 → Gripper 파지/인출 → Carriage Load Cell 확인 → Handoff 이동 → Conveyor 전달`
+
+현재 ArUco, Gripper, Carriage Load Cell, Conveyor가 준비되지 않은 단계는
+소프트웨어 검증을 위해 성공한 것으로 처리하고 있으며,
+향후 실제 장비의 완료 신호로 교체한다.
+
+
+### 8. Tray 자동 회수 흐름
+
+모든 공급이 완료되면 Stage는 Conveyor Handoff 위치에서
+반환 Tray를 기다리는 `RETURN_WAIT` 상태로 진입한다.
+
+작업자가 Tray 사용을 완료하면 해당 Tray가 Return Queue에 등록된다.
+
+반환 Tray는 다음 순서로 처리한다.
+
+`Conveyor 역방향 이동 → Handoff 도착 → ArUco 자동 인식 → Gripper 파지 → Carriage Load Cell 확인 → 해당 Tray Slot 이동 → Tray 삽입/해제 → Handoff 복귀`
+
+반환 순서는 고정하지 않는다.
+
+각 Tray에 부착된 ArUco Marker를 통해 실제 Handoff에 도착한 Tray ID를 인식하고,
+해당 Tray의 복귀 목표 Slot을 결정하도록 설계하였다.
+
+따라서 TRAY 02가 TRAY 01보다 먼저 반환되어도
+ArUco 인식 결과에 따라 TRAY 02부터 정상 복귀시킬 수 있다.
+
+
+### 9. Load Cell 역할
+
+Load Cell은 총 2개를 사용하는 구조를 기준으로 한다.
+
+캐리지 측 Load Cell:
+
+`Gripper 인출 동작 완료 + Load Cell 하중 증가 → Tray 적재/인출 성공 보조 검증`
+
+Conveyor 끝단 작업자 측 Load Cell:
+
+`작업자 Picking 이후 Tray 중량 기반 최종 검수`
+
+캐리지 Load Cell만으로 완전 인출 여부를 단독 판정하지 않고,
+Gripper의 인출 완료 조건과 함께 사용하는 것을 기준으로 한다.
+
+
+### 10. 현재 Mock/BYPASS 처리 항목
+
+현재 실제 장비가 준비되지 않은 다음 기능은
+Material Flow 내부에서 성공한 것으로 처리하여 전체 흐름을 검증하였다.
+
+- ArUco 기반 위치 미세 보정
+- Gripper 파지 및 인출
+- Carriage Load Cell 기반 인출 검증
+- Conveyor 전달 및 반환 신호
+- 반환 Tray 실제 ArUco 인식
+- Tray 삽입 및 Gripper 해제
+
+향후 장비가 준비되면 현재 Material Flow 구조는 유지하고,
+각 BYPASS 구간을 실제 센서 및 액추에이터의 완료 신호로 교체한다.
+
+
+### 11. 검증 결과
+
+Backend 검증:
+
+- `python3 -m py_compile` 성공
+- `git diff --check` 이상 없음
+
+Frontend 검증:
+
+- `npm run build` 성공
+- 전체 Mock Workflow 실행 완료
+
+Mock Material Flow 최종 상태:
+
+- Supply Queue: `[1, 2]`
+- Supplied Trays: `[1, 2]`
+- `supply_state = SUPPLY_COMPLETE`
+- `supply_complete = true`
+- Returned Trays: `[1, 2]`
+- `return_state = ALL_RETURNED`
+- `all_returned = true`
+- 최종 `WORK COMPLETE` 화면 진입 확인
+
+실제 Stage 검증:
+
+- 6개 Slot 실물 이동 정상 확인
+
+
+### 12. 관련 주요 커밋
+
+- `ba7e7d3` — 실제 6개 Slot Stage 매핑 및 이동 검증
+- `54808d5` — 병렬 Tray 공급 및 자동 회수 Material Flow 추가
+
+
+### 13. 향후 작업
+
+1. 배선 정리 후 실제 Stage 연속 왕복 동선 검증
+2. `TRAY → HANDOFF → 다음 TRAY` 실제 연속 이동 시험
+3. `HANDOFF → TRAY Slot → HANDOFF` 실제 회수 이동 시험
+4. ArUco 기반 미세 위치 보정 실제 연동
+5. Gripper 파지 / 인출 / 삽입 실제 연동
+6. Carriage Load Cell 기반 인출 성공 검증
+7. 실제 Conveyor 전달 / 반환 신호 연동
+8. UI에 Stage Supply / Return 상태 시각화 보강
+9. 전체 시스템 통합 시험
+
