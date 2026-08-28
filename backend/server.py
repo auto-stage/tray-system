@@ -17,6 +17,7 @@ from adapters.mock_stage_adapter import MockStageAdapter
 from adapters.stm32_stage_adapter import STM32StageAdapter
 from adapters.mock_vision_adapter import MockVisionAdapter
 from workflow.workflow_controller import WorkflowController
+from workflow.material_flow_controller import MaterialFlowController
 from parts_db import find_part
 
 import asyncio
@@ -111,6 +112,7 @@ else:
 
 vision = MockVisionAdapter()
 workflow = WorkflowController()
+material_flow = MaterialFlowController()
 
 
 # ============================================================
@@ -929,6 +931,13 @@ def stage_move_to_tray(
     )
 
 
+
+@app.post("/stage/move-to-handoff")
+def stage_move_to_handoff():
+
+    return stage.move_to_handoff()
+
+
 @app.post("/stage/pause")
 def stage_pause():
 
@@ -1005,6 +1014,240 @@ def relocation_plan(
             "success": False,
             "message": str(error),
         }
+
+
+# ============================================================
+# Material Flow API
+# Stage 공급 / Handoff / 회수
+# ============================================================
+
+class MaterialFlowStartRequest(
+    BaseModel
+):
+    items: list[dict]
+
+
+@app.post("/material-flow/start")
+def material_flow_start(
+    request: MaterialFlowStartRequest
+):
+
+    try:
+        data = material_flow.start(
+            request.items
+        )
+
+        return {
+            "success": True,
+            "data": data,
+        }
+
+    except ValueError as error:
+        return {
+            "success": False,
+            "message": str(error),
+        }
+
+
+@app.get("/material-flow/status")
+def material_flow_status():
+
+    return {
+        "success": True,
+        "data":
+            material_flow.get_status(),
+    }
+
+
+@app.post(
+    "/material-flow/supply/tray-arrived"
+)
+def material_flow_supply_tray_arrived():
+
+    return {
+        "success": True,
+        "data":
+            material_flow.supply_tray_arrived(),
+    }
+
+
+@app.post(
+    "/material-flow/supply/alignment-complete"
+)
+def material_flow_supply_alignment_complete():
+
+    return {
+        "success": True,
+        "data":
+            material_flow.supply_alignment_complete(),
+    }
+
+
+@app.post(
+    "/material-flow/supply/extraction-complete"
+)
+def material_flow_supply_extraction_complete():
+
+    return {
+        "success": True,
+        "data":
+            material_flow.supply_extraction_complete(),
+    }
+
+
+@app.post(
+    "/material-flow/supply/handoff-complete"
+)
+def material_flow_supply_handoff_complete():
+
+    try:
+        data = (
+            material_flow
+            .supply_handoff_complete()
+        )
+
+        return {
+            "success": True,
+            "data": data,
+        }
+
+    except ValueError as error:
+        return {
+            "success": False,
+            "message": str(error),
+        }
+
+
+@app.post(
+    "/material-flow/return-ready/{tray_id}"
+)
+def material_flow_return_ready(
+    tray_id: int
+):
+
+    try:
+        data = material_flow.enqueue_return(
+            tray_id
+        )
+
+        return {
+            "success": True,
+            "data": data,
+        }
+
+    except ValueError as error:
+        return {
+            "success": False,
+            "message": str(error),
+        }
+
+
+@app.post(
+    "/material-flow/return/identified/{tray_id}"
+)
+def material_flow_return_identified(
+    tray_id: int
+):
+
+    try:
+        data = (
+            material_flow
+            .return_tray_identified(
+                tray_id
+            )
+        )
+
+        return {
+            "success": True,
+            "data": data,
+        }
+
+    except ValueError as error:
+        return {
+            "success": False,
+            "message": str(error),
+        }
+
+
+@app.post(
+    "/material-flow/return/pick-complete"
+)
+def material_flow_return_pick_complete():
+
+    try:
+        data = (
+            material_flow
+            .return_pick_complete()
+        )
+
+        return {
+            "success": True,
+            "data": data,
+        }
+
+    except ValueError as error:
+        return {
+            "success": False,
+            "message": str(error),
+        }
+
+
+@app.post(
+    "/material-flow/return/slot-arrived"
+)
+def material_flow_return_slot_arrived():
+
+    try:
+        data = (
+            material_flow
+            .return_slot_arrived()
+        )
+
+        return {
+            "success": True,
+            "data": data,
+        }
+
+    except ValueError as error:
+        return {
+            "success": False,
+            "message": str(error),
+        }
+
+
+@app.post(
+    "/material-flow/return/insert-complete"
+)
+def material_flow_return_insert_complete():
+
+    try:
+        data = (
+            material_flow
+            .return_insert_complete()
+        )
+
+        return {
+            "success": True,
+            "data": data,
+        }
+
+    except ValueError as error:
+        return {
+            "success": False,
+            "message": str(error),
+        }
+
+
+@app.post(
+    "/material-flow/return/handoff-arrived"
+)
+def material_flow_return_handoff_arrived():
+
+    return {
+        "success": True,
+        "data":
+            material_flow.return_handoff_arrived(),
+    }
 
 
 # ============================================================

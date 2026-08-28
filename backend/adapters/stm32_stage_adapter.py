@@ -11,6 +11,7 @@ import serial
 
 from .stage_adapter import StageAdapter
 from .slot_resolver import resolve_tray_target
+from .system_position_resolver import resolve_system_position
 
 
 # 기존 현장 매핑 프로그램에서 실제 사용한 값 기준
@@ -1141,6 +1142,70 @@ class STM32StageAdapter(StageAdapter):
                 "target":
                     target,
 
+                "status":
+                    result["status"],
+            }
+
+
+    def move_to_handoff(self):
+        """
+        시스템에 저장된
+        CONVEYOR_HANDOFF 절대좌표로 이동한다.
+        """
+
+        target = resolve_system_position(
+            "CONVEYOR_HANDOFF"
+        )
+
+        if not target.get(
+            "success"
+        ):
+            self.last_error = (
+                target.get(
+                    "message"
+                )
+            )
+
+            return {
+                **target,
+                "status":
+                    self.get_status(),
+            }
+
+        with self._motion_lock:
+
+            self.paused = False
+            self.current_target = target
+            self.state = "MOVING"
+
+            result = (
+                self._move_to_position(
+                    target["x_mm"],
+                    target["z_mm"],
+                )
+            )
+
+            if not result[
+                "success"
+            ]:
+                self.state = "ERROR"
+
+                return {
+                    **result,
+                    "target": target,
+                }
+
+            # Handoff 위치는 특정 Tray 슬롯이 아니다.
+            self.current_tray = None
+
+            self.state = "READY"
+            self.last_error = None
+
+            return {
+                "success": True,
+                "message":
+                    "CONVEYOR_HANDOFF 이동 완료",
+                "target": target,
                 "status":
                     result["status"],
             }

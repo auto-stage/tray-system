@@ -2546,7 +2546,12 @@ function TrayReturnScreen({
 
   const initEntries: TrayReturnEntry[] = uniqueUsedItems.map((item, i) => ({
     tray: item,
-    arucoId: String(i + 1).padStart(2, '0'),
+    arucoId: String(
+      Number(
+        item.tray.match(/\d+/)?.[0]
+        ?? i + 1
+      )
+    ).padStart(2, '0'),
     fromSlot: slotOf(item.tray, currentSlots),
     toSlot: slotOf(item.tray, targetSlots),
     phase: 'waiting',
@@ -2563,180 +2568,224 @@ function TrayReturnScreen({
     setEntries(prev => prev.map((e, i) => i === idx ? { ...e, phase } : e))
   }
 
-  // Tray 복귀:
-  // waiting은 작업자가 Tray를 올려놓는 시간을 표현하는 Mock 대기.
-  // ArUco 확인 자체는 실제 /vision/aruco API 결과로 판정한다.
-  // 실제 장비에서는 waiting도 센서/버튼 신호로 교체 가능하다.
+  // Tray 회수/복귀 실제 상태 표시.
+  //
+  // 실제 Stage 이동은 Material Flow가 독립적으로 수행하고,
+  // 이 화면은 Backend 상태를 조회해서 진행상황만 보여준다.
+  const completedRef =
+    useRef(false)
+
   useEffect(() => {
-    if (isPaused || showStop) return
-
-    const idx = currentIdx
-
-    if (idx >= entries.length) {
+    if (
+      isPaused ||
+      showStop
+    ) {
       return
     }
 
     let cancelled = false
-    let timer:
-      ReturnType<typeof setTimeout> | undefined
 
-    const execute = async () => {
-      setPhase(idx, 'waiting')
+    const syncReturnStatus =
+      async () => {
+        try {
+          const response =
+            await fetch(
+              'http://127.0.0.1:8000/material-flow/status'
+            )
 
-      // 현재는 Mock 데모상 Tray를 올려놓을 시간을 짧게 둔다.
-      await new Promise<void>(
-        resolve => {
-          timer = setTimeout(
-            resolve,
-            1200
+          const result =
+            await response.json()
+
+          if (
+            cancelled ||
+            !response.ok ||
+            !result.success
+          ) {
+            return
+          }
+
+          const status =
+            result.data
+
+          const returnedTrays =
+            Array.isArray(
+              status?.returned_trays
+            )
+              ? status.returned_trays.map(Number)
+              : []
+
+          const returnQueue =
+            Array.isArray(
+              status?.return_queue
+            )
+              ? status.return_queue.map(Number)
+              : []
+
+          const currentReturnTray =
+            Number(
+              status?.current_return_tray
+              ?? -1
+            )
+
+          const returnState =
+            String(
+              status?.return_state
+              ?? ''
+            )
+
+          setEntries(
+            previous =>
+              previous.map(
+                entry => {
+                  const trayId =
+                    Number(
+                      entry.tray.tray
+                        .match(/\d+/)?.[0]
+                      ?? -1
+                    )
+
+                  let phase:
+                    ReturnPhase =
+                      'waiting'
+
+                  if (
+                    returnedTrays.includes(
+                      trayId
+                    )
+                  ) {
+                    phase = 'placed'
+
+                  } else if (
+                    trayId
+                    === currentReturnTray
+                  ) {
+                    if (
+                      returnState
+                      === 'RETURN_PICKING'
+                    ) {
+                      phase = 'recognized'
+
+                    } else if (
+                      [
+                        'RETURNING_TO_SLOT',
+                        'RETURN_INSERTING',
+                        'RETURN_TO_HANDOFF',
+                      ].includes(
+                        returnState
+                      )
+                    ) {
+                      phase = 'relocating'
+
+                    } else {
+                      phase = 'detecting'
+                    }
+
+                  } else if (
+                    returnQueue.includes(
+                      trayId
+                    )
+                  ) {
+                    phase = 'waiting'
+                  }
+
+                  return {
+                    ...entry,
+                    phase,
+                  }
+                }
+              )
+          )
+
+          // 화면에서 현재 진행 Tray도
+          // 실제 ArUco/MaterialFlow 결과 기준으로 표시.
+          let activeIndex = -1
+
+          if (
+            Number.isInteger(
+              currentReturnTray
+            )
+            &&
+            currentReturnTray > 0
+          ) {
+            activeIndex =
+              uniqueUsedItems.findIndex(
+                item =>
+                  Number(
+                    item.tray
+                      .match(/\d+/)?.[0]
+                    ?? -1
+                  )
+                  === currentReturnTray
+              )
+          }
+
+          if (activeIndex < 0) {
+            activeIndex =
+              uniqueUsedItems.findIndex(
+                item =>
+                  !returnedTrays.includes(
+                    Number(
+                      item.tray
+                        .match(/\d+/)?.[0]
+                      ?? -1
+                    )
+                  )
+              )
+          }
+
+          if (activeIndex >= 0) {
+            setCurrentIdx(
+              activeIndex
+            )
+          }
+
+          if (
+            status?.all_returned
+            === true
+            &&
+            !completedRef.current
+          ) {
+            completedRef.current = true
+
+            onComplete(
+              targetSlots
+            )
+          }
+
+        } catch (error) {
+          console.error(
+            '[MATERIAL] 회수 상태 조회 실패:',
+            error
           )
         }
+      }
+
+    syncReturnStatus()
+
+    const timer =
+      setInterval(
+        syncReturnStatus,
+        500
       )
-
-      if (
-        cancelled ||
-        pausedRef.current ||
-        stopRef.current
-      ) {
-        return
-      }
-
-      setPhase(idx, 'detecting')
-
-      const visionResult =
-        await onArucoCheck()
-
-      if (
-        cancelled ||
-        pausedRef.current ||
-        stopRef.current
-      ) {
-        return
-      }
-
-      const expectedTrayId =
-        Number(
-          entries[idx].tray.tray
-            .match(/\d+/)?.[0]
-        )
-
-      const detectedTrayId =
-        Number(
-          visionResult.tray_id ??
-          visionResult.aruco_id
-        )
-
-      // MockVisionAdapter는 현재 고정 ID를 돌려주므로
-      // mock=true일 때는 연결 통로 테스트로 간주해 현재 대상 Tray를 승인.
-      // 실제 VisionAdapter(mock=false)에서는 반드시 ID가 일치해야 통과.
-      const matched =
-        visionResult.success &&
-        visionResult.detected &&
-        (
-          visionResult.mock === true ||
-          detectedTrayId === expectedTrayId
-        )
-
-      if (!matched) {
-        setPhase(idx, 'waiting')
-
-        alert(
-          `ArUco 확인 실패\n\n` +
-          `기대 Tray: ${entries[idx].tray.tray}\n` +
-          `인식 ID: ${
-            Number.isFinite(detectedTrayId)
-              ? detectedTrayId
-              : '인식 실패'
-          }`
-        )
-
-        return
-      }
-
-      setPhase(idx, 'recognized')
-
-      await new Promise<void>(
-        resolve => {
-          timer = setTimeout(
-            resolve,
-            500
-          )
-        }
-      )
-
-      if (
-        cancelled ||
-        pausedRef.current ||
-        stopRef.current
-      ) {
-        return
-      }
-
-      // 재배치 이동 자체는 아직 Stage/Q-learning 실제 명령 전이므로
-      // UI Mock 진행을 유지한다.
-      setPhase(idx, 'relocating')
-
-      await new Promise<void>(
-        resolve => {
-          timer = setTimeout(
-            resolve,
-            1200
-          )
-        }
-      )
-
-      if (
-        cancelled ||
-        pausedRef.current ||
-        stopRef.current
-      ) {
-        return
-      }
-
-      setPhase(idx, 'placed')
-
-      await new Promise<void>(
-        resolve => {
-          timer = setTimeout(
-            resolve,
-            400
-          )
-        }
-      )
-
-      if (cancelled) {
-        return
-      }
-
-      if (idx + 1 < entries.length) {
-        setCurrentIdx(idx + 1)
-      } else {
-        onComplete(targetSlots)
-      }
-    }
-
-    execute()
 
     return () => {
       cancelled = true
-
-      if (timer) {
-        clearTimeout(timer)
-      }
+      clearInterval(timer)
     }
+
   }, [
-    currentIdx,
     isPaused,
     showStop
   ]) // eslint-disable-line
 
+
   const cur = entries[currentIdx]
 
   const phaseLabel: Record<ReturnPhase, string> = {
-    waiting: '다음 Tray를 그리퍼에 올려주세요',
+    waiting: '반환 Tray Handoff 도착 대기',
     detecting: 'ArUco Marker 감지 중...',
     recognized: `TRAY 인식 완료 — ${cur?.tray.tray}`,
-    relocating: `${cur?.tray.tray} 재배치 중`,
+    relocating: `${cur?.tray.tray} 선반 복귀 중`,
     placed: `${cur?.tray.tray} 배치 완료`,
   }
   const phaseColor: Record<ReturnPhase, string> = {
@@ -4671,6 +4720,65 @@ export default function App() {
     }
   }
 
+  const requestStageHandoff = async (): Promise<{
+    success: boolean
+    message: string
+  }> => {
+    try {
+      const response = await fetch(
+        'http://127.0.0.1:8000/stage/move-to-handoff',
+        {
+          method: 'POST',
+        }
+      )
+
+      if (!response.ok) {
+        throw new Error(
+          `Stage Handoff 서버 오류: ${response.status}`
+        )
+      }
+
+      const result = await response.json()
+
+      if (!result.success) {
+        return {
+          success: false,
+          message:
+            result.message ||
+            result.error ||
+            'Handoff 이동 실패',
+        }
+      }
+
+      console.log(
+        '[STAGE] Handoff 이동 완료:',
+        result
+      )
+
+      return {
+        success: true,
+        message:
+          result.message ||
+          'Handoff 이동 완료',
+      }
+
+    } catch (error) {
+      console.error(
+        '[STAGE] Handoff 이동 요청 실패:',
+        error
+      )
+
+      return {
+        success: false,
+        message:
+          error instanceof Error
+            ? error.message
+            : 'Handoff 이동 요청 실패',
+      }
+    }
+  }
+
+
   const requestStagePause = async (): Promise<boolean> => {
     try {
       const response = await fetch(
@@ -5238,6 +5346,553 @@ export default function App() {
         tray_id: null,
         aruco_id: null,
       }
+    }
+  }
+
+
+  // ============================================================
+  // Material Flow API
+  //
+  // Stage의 Tray 공급 / Handoff / 회수 흐름은
+  // 작업자 Picking Workflow와 독립적으로 관리한다.
+  // ============================================================
+
+  const trayNumber = (
+    trayLabel: string
+  ) => {
+    return Number(
+      trayLabel.match(/\d+/)?.[0] ?? -1
+    )
+  }
+
+
+  const requestMaterialFlowStart = async () => {
+    try {
+      const response = await fetch(
+        'http://127.0.0.1:8000/material-flow/start',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type':
+              'application/json',
+          },
+          body: JSON.stringify({
+            items: workItems.map(item => ({
+              part_no: item.partNo,
+              name: item.name,
+              spec: item.spec,
+              tray: item.tray,
+              quantity: item.qty,
+            })),
+          }),
+        }
+      )
+
+      const result = await response.json()
+
+      if (
+        !response.ok ||
+        !result.success
+      ) {
+        throw new Error(
+          result.message ||
+          'Material Flow 시작 실패'
+        )
+      }
+
+      console.log(
+        '[MATERIAL] 시작:',
+        result.data
+      )
+
+      return result.data
+
+    } catch (error) {
+      console.error(
+        '[MATERIAL] 시작 실패:',
+        error
+      )
+
+      return null
+    }
+  }
+
+
+  const requestMaterialFlowStatus = async () => {
+    try {
+      const response = await fetch(
+        'http://127.0.0.1:8000/material-flow/status'
+      )
+
+      const result = await response.json()
+
+      if (
+        !response.ok ||
+        !result.success
+      ) {
+        return null
+      }
+
+      return result.data
+
+    } catch (error) {
+      console.error(
+        '[MATERIAL] 상태 조회 실패:',
+        error
+      )
+
+      return null
+    }
+  }
+
+
+  const postMaterialFlow = async (
+    path: string
+  ) => {
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:8000${path}`,
+        {
+          method: 'POST',
+        }
+      )
+
+      const result = await response.json()
+
+      if (
+        !response.ok ||
+        !result.success
+      ) {
+        throw new Error(
+          result.message ||
+          `Material Flow 요청 실패: ${path}`
+        )
+      }
+
+      console.log(
+        `[MATERIAL] ${path}:`,
+        result.data
+      )
+
+      return result.data
+
+    } catch (error) {
+      console.error(
+        `[MATERIAL] ${path} 실패:`,
+        error
+      )
+
+      return null
+    }
+  }
+
+
+  const requestMaterialReturnReady = async (
+    trayId: number
+  ) => {
+    return postMaterialFlow(
+      `/material-flow/return-ready/${trayId}`
+    )
+  }
+
+
+  const waitForTraySupplied = async (
+    trayId: number,
+    timeoutMs = 300000
+  ) => {
+    const startedAt = Date.now()
+
+    while (
+      Date.now() - startedAt
+      < timeoutMs
+    ) {
+      const status =
+        await requestMaterialFlowStatus()
+
+      if (
+        Array.isArray(
+          status?.supplied_trays
+        ) &&
+        status.supplied_trays.includes(
+          trayId
+        )
+      ) {
+        return true
+      }
+
+      await new Promise<void>(
+        resolve =>
+          setTimeout(
+            resolve,
+            250
+          )
+      )
+    }
+
+    return false
+  }
+
+
+  const runSupplySequence = async () => {
+    while (true) {
+      const status =
+        await requestMaterialFlowStatus()
+
+      if (!status) {
+        throw new Error(
+          'Material Flow 상태를 확인할 수 없습니다.'
+        )
+      }
+
+      if (
+        status.supply_complete === true
+      ) {
+        console.log(
+          '[MATERIAL] 모든 Tray 공급 완료. RETURN_WAIT'
+        )
+
+        // 공급이 끝난 Stage는 Handoff에 머물면서
+        // 작업자가 반환한 Tray를 독립적으로 회수한다.
+        void runReturnSequence().catch(
+          error => {
+            console.error(
+              '[MATERIAL] 자동 회수 실패:',
+              error
+            )
+
+            alert(
+              'Tray 자동 회수 중 오류가 발생했습니다.\n\n'
+              + (
+                error instanceof Error
+                  ? error.message
+                  : String(error)
+              )
+            )
+          }
+        )
+
+        return
+      }
+
+      const trayId =
+        Number(
+          status.current_supply_tray
+        )
+
+      if (
+        !Number.isInteger(trayId) ||
+        trayId < 1
+      ) {
+        throw new Error(
+          '현재 공급 Tray ID가 올바르지 않습니다.'
+        )
+      }
+
+      const trayLabel =
+        `TRAY ${String(trayId).padStart(2, '0')}`
+
+      console.log(
+        '[MATERIAL] 공급 시작:',
+        trayLabel
+      )
+
+      // 1. 실제 Stage -> Tray 위치
+      const moveResult =
+        await requestStageMove(
+          trayLabel
+        )
+
+      if (!moveResult.success) {
+        throw new Error(
+          moveResult.message
+        )
+      }
+
+      // 2. Tray 위치 도착
+      if (
+        !await postMaterialFlow(
+          '/material-flow/supply/tray-arrived'
+        )
+      ) {
+        throw new Error(
+          'Tray 도착 상태 전환 실패'
+        )
+      }
+
+      // 3. ArUco 미세 정렬
+      //
+      // 현재 카메라 미연동:
+      // 상태만 성공 처리.
+      // 향후 실제 ArUco 보정 완료 신호로 교체.
+      if (
+        !await postMaterialFlow(
+          '/material-flow/supply/alignment-complete'
+        )
+      ) {
+        throw new Error(
+          'ArUco 정렬 상태 전환 실패'
+        )
+      }
+
+      // 4. Gripper 인출 + 캐리지 Load Cell 확인
+      //
+      // 현재 장비 미연동:
+      // 상태만 성공 처리.
+      if (
+        !await postMaterialFlow(
+          '/material-flow/supply/extraction-complete'
+        )
+      ) {
+        throw new Error(
+          'Tray 인출 상태 전환 실패'
+        )
+      }
+
+      // 5. 실제 Stage -> Conveyor Handoff
+      const handoffResult =
+        await requestStageHandoff()
+
+      if (!handoffResult.success) {
+        throw new Error(
+          handoffResult.message
+        )
+      }
+
+      // 6. Conveyor 전달 완료
+      //
+      // 향후 Gripper 해제 / Load Cell 감소 /
+      // Conveyor 수용 확인 신호와 연결.
+      const handoffState =
+        await postMaterialFlow(
+          '/material-flow/supply/handoff-complete'
+        )
+
+      if (!handoffState) {
+        throw new Error(
+          'Handoff 완료 상태 전환 실패'
+        )
+      }
+
+      console.log(
+        '[MATERIAL] 공급 완료:',
+        trayLabel
+      )
+    }
+  }
+
+
+  const runReturnSequence = async () => {
+    console.log(
+      '[MATERIAL] Return Loop 시작'
+    )
+
+    while (true) {
+      const status =
+        await requestMaterialFlowStatus()
+
+      if (!status) {
+        throw new Error(
+          'Material Flow 반환 상태를 확인할 수 없습니다.'
+        )
+      }
+
+      if (
+        status.all_returned === true
+      ) {
+        console.log(
+          '[MATERIAL] 모든 Tray 회수 완료'
+        )
+        return
+      }
+
+      if (
+        status.supply_complete !== true
+      ) {
+        await new Promise<void>(
+          resolve =>
+            setTimeout(
+              resolve,
+              500
+            )
+        )
+        continue
+      }
+
+      const returnQueue =
+        Array.isArray(
+          status.return_queue
+        )
+          ? status.return_queue.map(Number)
+          : []
+
+      // 작업자가 아직 반환 가능한 Tray를
+      // 등록하지 않았다면 Handoff에서 대기.
+      if (
+        returnQueue.length === 0
+      ) {
+        await new Promise<void>(
+          resolve =>
+            setTimeout(
+              resolve,
+              500
+            )
+        )
+        continue
+      }
+
+      // --------------------------------------------------------
+      // Handoff에 도착한 반환 Tray 자동 식별
+      //
+      // 실제 장비:
+      //   ArUco 결과의 Tray ID 사용
+      //
+      // Mock:
+      //   카메라가 없으므로 Return Queue 첫 Tray를
+      //   Handoff에 도착했다고 가정.
+      // --------------------------------------------------------
+      const visionResult =
+        await requestVisionAruco()
+
+      let detectedTrayId = -1
+
+      if (
+        visionResult?.mock === true
+      ) {
+        detectedTrayId =
+          Number(
+            returnQueue[0]
+          )
+
+      } else if (
+        visionResult?.success === true
+        &&
+        visionResult?.detected === true
+      ) {
+        detectedTrayId =
+          Number(
+            visionResult.tray_id
+            ??
+            visionResult.aruco_id
+          )
+      }
+
+      if (
+        !Number.isInteger(
+          detectedTrayId
+        )
+        ||
+        !returnQueue.includes(
+          detectedTrayId
+        )
+      ) {
+        await new Promise<void>(
+          resolve =>
+            setTimeout(
+              resolve,
+              500
+            )
+        )
+        continue
+      }
+
+      console.log(
+        '[MATERIAL] 반환 Tray 자동 인식:',
+        `TRAY ${String(detectedTrayId).padStart(2, '0')}`
+      )
+
+      // 1. ArUco로 반환 Tray ID 확인
+      const identified =
+        await postMaterialFlow(
+          `/material-flow/return/identified/${detectedTrayId}`
+        )
+
+      if (!identified) {
+        throw new Error(
+          '반환 Tray ID 반영 실패'
+        )
+      }
+
+      // 2. Handoff에서 Gripper 파지 +
+      //    캐리지 Load Cell 확인
+      //
+      // 현재 장비 미연동이므로 BYPASS.
+      const pickState =
+        await postMaterialFlow(
+          '/material-flow/return/pick-complete'
+        )
+
+      if (!pickState) {
+        throw new Error(
+          '반환 Tray 파지 상태 전환 실패'
+        )
+      }
+
+      // 3. ArUco로 식별한 Tray의 Slot으로 실제 Stage 이동
+      const trayLabel =
+        `TRAY ${String(detectedTrayId).padStart(2, '0')}`
+
+      const moveResult =
+        await requestStageMove(
+          trayLabel
+        )
+
+      if (!moveResult.success) {
+        throw new Error(
+          moveResult.message
+        )
+      }
+
+      const slotState =
+        await postMaterialFlow(
+          '/material-flow/return/slot-arrived'
+        )
+
+      if (!slotState) {
+        throw new Error(
+          '반환 Slot 도착 상태 전환 실패'
+        )
+      }
+
+      // 4. Tray 삽입 + Gripper 해제
+      //
+      // 현재 Gripper 미연동이므로 BYPASS.
+      const insertState =
+        await postMaterialFlow(
+          '/material-flow/return/insert-complete'
+        )
+
+      if (!insertState) {
+        throw new Error(
+          'Tray 삽입 상태 전환 실패'
+        )
+      }
+
+      // 5. 다음 반환 Tray를 받기 위해
+      //    실제 Stage Handoff 복귀
+      const handoffResult =
+        await requestStageHandoff()
+
+      if (!handoffResult.success) {
+        throw new Error(
+          handoffResult.message
+        )
+      }
+
+      const handoffState =
+        await postMaterialFlow(
+          '/material-flow/return/handoff-arrived'
+        )
+
+      if (!handoffState) {
+        throw new Error(
+          'Handoff 복귀 상태 전환 실패'
+        )
+      }
+
+      console.log(
+        '[MATERIAL] Tray 회수 완료:',
+        trayLabel
+      )
     }
   }
 
@@ -5927,9 +6582,62 @@ export default function App() {
       return
     }
 
-    await goToTrayMoving(
+    const materialState =
+      await requestMaterialFlowStart()
+
+    if (!materialState) {
+      alert(
+        'Stage 공급 흐름 시작에 실패했습니다.'
+      )
+      return
+    }
+
+    setCurrentItemIndex(
       firstIndex
     )
+
+    nav('TRAY_MOVING')
+
+    // Stage 공급은 작업자 Workflow와 독립적으로
+    // 백그라운드에서 계속 진행한다.
+    void runSupplySequence().catch(
+      error => {
+        console.error(
+          '[MATERIAL] 자동 공급 실패:',
+          error
+        )
+
+        alert(
+          'Tray 자동 공급 중 오류가 발생했습니다.\n\n'
+          + (
+            error instanceof Error
+              ? error.message
+              : String(error)
+          )
+        )
+      }
+    )
+
+    const firstTrayId =
+      trayNumber(
+        workItems[firstIndex].tray
+      )
+
+    // 작업자는 해당 Tray가 선반 위치에 도착했을 때가 아니라
+    // Conveyor Handoff까지 전달된 뒤 작업을 시작한다.
+    const supplied =
+      await waitForTraySupplied(
+        firstTrayId
+      )
+
+    if (!supplied) {
+      alert(
+        '첫 번째 Tray 공급 완료를 확인하지 못했습니다.'
+      )
+      return
+    }
+
+    await handleTrayArrived()
   }
   const handleTrayArrived = async () => {
     const workflowState =
@@ -6023,9 +6731,40 @@ export default function App() {
       return
     }
 
+    // 동일 Tray를 사용하는 뒤쪽 품목이 더 없다면
+    // 해당 Tray는 이제 반환 가능하다.
+    const completedTrayId =
+      trayNumber(
+        currentItem.tray
+      )
+
+    const hasLaterSameTray =
+      workItems
+        .slice(
+          currentItemIndex + 1
+        )
+        .some(
+          item =>
+            trayNumber(item.tray)
+            === completedTrayId
+        )
+
+    if (!hasLaterSameTray) {
+      const returnReady =
+        await requestMaterialReturnReady(
+          completedTrayId
+        )
+
+      if (!returnReady) {
+        alert(
+          `${currentItem.tray} 반환 대기 등록에 실패했습니다.`
+        )
+        return
+      }
+    }
+
     // 마지막 품목이더라도 ITEM_COMPLETE를 먼저 보여준다.
-    // 그 다음 버튼에서 /workflow/next-item을 호출하면
-    // Python이 FINAL_VERIFICATION 또는 다음 TRAY_MOVING을 결정한다.
+    // Worker Workflow와 Stage 공급 Workflow는 서로 독립적이다.
     nav('ITEM_COMPLETE')
   }
 
@@ -6065,9 +6804,49 @@ export default function App() {
       return
     }
 
-    await goToTrayMoving(
+    setCurrentItemIndex(
       nextIndex
     )
+
+    nav('TRAY_MOVING')
+
+    const nextTrayId =
+      trayNumber(
+        workItems[nextIndex].tray
+      )
+
+    const supplied =
+      await waitForTraySupplied(
+        nextTrayId
+      )
+
+    if (!supplied) {
+      alert(
+        `${workItems[nextIndex].tray} 공급 완료를 확인하지 못했습니다.`
+      )
+      return
+    }
+
+    const arrivedState =
+      await requestWorkflowTrayArrived()
+
+    if (!arrivedState) {
+      alert(
+        '다음 Tray 도착 상태를 Workflow에 반영하지 못했습니다.'
+      )
+      return
+    }
+
+    if (
+      arrivedState.state !== 'PICKING'
+    ) {
+      alert(
+        `Workflow 상태 오류: ${arrivedState.state}`
+      )
+      return
+    }
+
+    nav('PICKING')
   }
   const handleFinalWeightPass = async () => {
     const workflowState =
@@ -6394,7 +7173,7 @@ export default function App() {
             trays={trays.map(t => t.id === currentItem.tray ? { ...t, status: 'MOVING' as const } : t)}
             isPaused={isPaused}
             showStop={showStopConfirm}
-            onArrived={handleTrayArrived}
+            onArrived={() => {}}
             onPause={handlePause}
             onStop={handleStopRequest}
           />

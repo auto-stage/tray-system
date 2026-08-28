@@ -12,6 +12,9 @@ class StageAdapter:
     def move_to_tray(self, tray_id: int):
         raise NotImplementedError
 
+    def move_to_handoff(self):
+        raise NotImplementedError
+
     def pause(self):
         raise NotImplementedError
 
