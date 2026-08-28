@@ -17,19 +17,19 @@ from .slot_resolver import resolve_tray_target
 BAUDRATE = 115200
 STATUS_POLL_SEC = 0.30
 
-HOME_TIMEOUT_SEC = 60.0
+HOME_TIMEOUT_SEC = 300.0
 MOVE_TIMEOUT_SEC = 120.0
 
 POSITION_TOLERANCE_MM = 0.10
 
 MOVE_PROFILE = {
     "X": {
-        "speed": 20.0,
-        "accel": 50.0,
+        "speed": 15.0,
+        "accel": 20.0,
     },
     "Z": {
-        "speed": 10.0,
-        "accel": 30.0,
+        "speed": 15.0,
+        "accel": 20.0,
     },
 }
 

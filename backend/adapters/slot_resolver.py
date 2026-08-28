@@ -20,15 +20,14 @@ SLOT_MAP_PATH = DATA_DIR / "slot_map.json"
 # Slot 5 : 하단 좌측
 # Slot 6 : 하단 우측
 #
-# X축: 좌/우 2열
-# Z축: 상/중/하 3행
-SLOT_ANCHORS = {
-    1: ("XC1", "ZR1"),
-    2: ("XC2", "ZR1"),
-    3: ("XC1", "ZR2"),
-    4: ("XC2", "ZR2"),
-    5: ("XC1", "ZR3"),
-    6: ("XC2", "ZR3"),
+# 오늘 최종 Teaching한 6개 좌표 키와 직접 연결한다.
+SLOT_MAPPING_KEYS = {
+    1: "XC1ZR1",
+    2: "XC2ZR1",
+    3: "XC1ZR2",
+    4: "XC2ZR2",
+    5: "XC1ZR3",
+    6: "XC2ZR3",
 }
 
 
@@ -60,12 +59,15 @@ def resolve_tray_target(
         Tray ID
         -> rack_layout.json
         -> 물리 Slot
-        -> XC/ZR anchor
+        -> 6점 직접 Mapping Key
         -> slot_map.json
         -> X/Z mm
 
-    매핑값이 하나라도 없으면 success=False를 반환하여
-    실제 Stage 이동을 금지할 수 있도록 한다.
+    예:
+        TRAY 01
+        -> Slot 5
+        -> XC1ZR3
+        -> x_mm / z_mm
     """
 
     if tray_id not in range(1, 7):
@@ -99,14 +101,13 @@ def resolve_tray_target(
             ),
         }
 
-    # JSON 배열 index 0~5
-    # 실제 Slot 번호 1~6
+    # JSON index 0~5 -> 실제 Slot 1~6
     slot_number = (
         slots.index(tray_label) + 1
     )
 
-    x_anchor, z_anchor = (
-        SLOT_ANCHORS[slot_number]
+    mapping_key = (
+        SLOT_MAPPING_KEYS[slot_number]
     )
 
     try:
@@ -125,51 +126,41 @@ def resolve_tray_target(
         {},
     )
 
-    x_entry = taught.get(x_anchor)
-    z_entry = taught.get(z_anchor)
+    entry = taught.get(mapping_key)
+
+    if not entry:
+        return {
+            "success": False,
+            "error": "MAPPING_INCOMPLETE",
+            "message": (
+                f"미매핑 좌표: {mapping_key}"
+            ),
+            "tray_id": tray_id,
+            "tray": tray_label,
+            "slot_number": slot_number,
+            "slot_name": SLOT_NAMES[
+                slot_number
+            ],
+            "mapping_key": mapping_key,
+        }
+
+    x_mm = entry.get("x_mm")
+    z_mm = entry.get("z_mm")
 
     missing = []
 
-    if not x_entry:
-        missing.append(x_anchor)
-
-    if not z_entry:
-        missing.append(z_anchor)
-
-    if missing:
-        return {
-            "success": False,
-            "error": "MAPPING_INCOMPLETE",
-            "message": (
-                "미매핑 좌표: "
-                + ", ".join(missing)
-            ),
-            "tray_id": tray_id,
-            "tray": tray_label,
-            "slot_number": slot_number,
-            "slot_name": SLOT_NAMES[
-                slot_number
-            ],
-            "x_anchor": x_anchor,
-            "z_anchor": z_anchor,
-            "missing": missing,
-        }
-
-    x_mm = x_entry.get("x_mm")
-    z_mm = z_entry.get("z_mm")
-
     if x_mm is None:
-        missing.append(x_anchor)
+        missing.append("x_mm")
 
     if z_mm is None:
-        missing.append(z_anchor)
+        missing.append("z_mm")
 
     if missing:
         return {
             "success": False,
             "error": "MAPPING_INCOMPLETE",
             "message": (
-                "좌표값 없음: "
+                f"{mapping_key} 좌표값 없음: "
                 + ", ".join(missing)
             ),
             "tray_id": tray_id,
@@ -178,8 +169,7 @@ def resolve_tray_target(
             "slot_name": SLOT_NAMES[
                 slot_number
             ],
-            "x_anchor": x_anchor,
-            "z_anchor": z_anchor,
+            "mapping_key": mapping_key,
             "missing": missing,
         }
 
@@ -191,8 +181,7 @@ def resolve_tray_target(
         "slot_name": SLOT_NAMES[
             slot_number
         ],
-        "x_anchor": x_anchor,
-        "z_anchor": z_anchor,
+        "mapping_key": mapping_key,
         "x_mm": float(x_mm),
         "z_mm": float(z_mm),
     }
