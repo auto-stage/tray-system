@@ -9,3 +9,7 @@ pytest>=8.0
 # Work-order OCR
 easyocr
 rapidfuzz
+fastapi
+uvicorn
+python-multipart
+pymupdf

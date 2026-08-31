@@ -154,7 +154,7 @@ typedef struct
 
 /* 실제 회전 방향/ENA 진리표가 반대이면 이 4개 상수만 반전합니다. */
 #define STAGE_X_DIR_POSITIVE_LEVEL         GPIO_PIN_SET
-#define STAGE_Z_DIR_POSITIVE_LEVEL         GPIO_PIN_SET
+#define STAGE_Z_DIR_POSITIVE_LEVEL         GPIO_PIN_RESET
 #define STAGE_X_DRIVER_ENABLED_LEVEL       GPIO_PIN_RESET
 #define STAGE_Z_DRIVER_ENABLED_LEVEL       GPIO_PIN_RESET
 

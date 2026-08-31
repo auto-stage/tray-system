@@ -1,0 +1,396 @@
+{
+  "history": [
+    {
+      "work_id": "1787403548608-작업지시서_최종양식_v2.pdf",
+      "completed_at": "2026-08-22T22:01:38",
+      "result": "COMPLETED",
+      "duration_seconds": 150,
+      "item_count": 2,
+      "total_quantity": 17,
+      "used_trays": [
+        "TRAY 05",
+        "TRAY 06"
+      ],
+      "items": [
+        {
+          "part_no": "W001",
+          "name": "평와셔",
+          "spec": "M6",
+          "quantity": 11,
+          "tray": "TRAY 05"
+        },
+        {
+          "part_no": "W002",
+          "name": "스프링와셔",
+          "spec": "M6",
+          "quantity": 6,
+          "tray": "TRAY 06"
+        }
+      ]
+    },
+    {
+      "work_id": "1787404624571-작업지시서_최종양식_v2.pdf",
+      "completed_at": "2026-08-22T22:19:22",
+      "result": "COMPLETED",
+      "duration_seconds": 138,
+      "item_count": 2,
+      "total_quantity": 17,
+      "used_trays": [
+        "TRAY 05",
+        "TRAY 06"
+      ],
+      "items": [
+        {
+          "part_no": "W001",
+          "name": "평와셔",
+          "spec": "M6",
+          "quantity": 11,
+          "tray": "TRAY 05"
+        },
+        {
+          "part_no": "W002",
+          "name": "스프링와셔",
+          "spec": "M6",
+          "quantity": 6,
+          "tray": "TRAY 06"
+        }
+      ]
+    },
+    {
+      "work_id": "1787405427144-작업지시서_최종양식_v3.pdf",
+      "completed_at": "2026-08-22T22:32:41",
+      "result": "COMPLETED",
+      "duration_seconds": 134,
+      "item_count": 2,
+      "total_quantity": 18,
+      "used_trays": [
+        "TRAY 01",
+        "TRAY 02"
+      ],
+      "items": [
+        {
+          "part_no": "B001",
+          "name": "육각볼트",
+          "spec": "M6X20",
+          "quantity": 10,
+          "tray": "TRAY 01"
+        },
+        {
+          "part_no": "B002",
+          "name": "육각렌치볼트",
+          "spec": "M5X15",
+          "quantity": 8,
+          "tray": "TRAY 02"
+        }
+      ]
+    },
+    {
+      "work_id": "1787406567631-작업지시서_최종양식_v3.pdf",
+      "completed_at": "2026-08-22T22:51:50",
+      "result": "COMPLETED",
+      "duration_seconds": 143,
+      "item_count": 2,
+      "total_quantity": 18,
+      "used_trays": [
+        "TRAY 01",
+        "TRAY 02"
+      ],
+      "items": [
+        {
+          "part_no": "B001",
+          "name": "육각볼트",
+          "spec": "M6X20",
+          "quantity": 10,
+          "tray": "TRAY 01"
+        },
+        {
+          "part_no": "B002",
+          "name": "육각렌치볼트",
+          "spec": "M5X15",
+          "quantity": 8,
+          "tray": "TRAY 02"
+        }
+      ]
+    },
+    {
+      "work_id": "1787406720197-작업지시서_최종양식_v2.pdf",
+      "completed_at": "2026-08-22T22:54:18",
+      "result": "COMPLETED",
+      "duration_seconds": 138,
+      "item_count": 2,
+      "total_quantity": 17,
+      "used_trays": [
+        "TRAY 05",
+        "TRAY 06"
+      ],
+      "items": [
+        {
+          "part_no": "W001",
+          "name": "평와셔",
+          "spec": "M6",
+          "quantity": 11,
+          "tray": "TRAY 05"
+        },
+        {
+          "part_no": "W002",
+          "name": "스프링와셔",
+          "spec": "M6",
+          "quantity": 6,
+          "tray": "TRAY 06"
+        }
+      ]
+    },
+    {
+      "work_id": "1787407407414-작업지시서_최종양식_v2.pdf",
+      "completed_at": "2026-08-22T23:05:52",
+      "result": "COMPLETED",
+      "duration_seconds": 145,
+      "item_count": 2,
+      "total_quantity": 17,
+      "used_trays": [
+        "TRAY 05",
+        "TRAY 06"
+      ],
+      "items": [
+        {
+          "part_no": "W001",
+          "name": "평와셔",
+          "spec": "M6",
+          "quantity": 11,
+          "tray": "TRAY 05"
+        },
+        {
+          "part_no": "W002",
+          "name": "스프링와셔",
+          "spec": "M6",
+          "quantity": 6,
+          "tray": "TRAY 06"
+        }
+      ]
+    },
+    {
+      "work_id": "1787407562695-작업지시서_최종양식_v2.pdf",
+      "completed_at": "2026-08-22T23:08:20",
+      "result": "COMPLETED",
+      "duration_seconds": 138,
+      "item_count": 2,
+      "total_quantity": 17,
+      "used_trays": [
+        "TRAY 05",
+        "TRAY 06"
+      ],
+      "items": [
+        {
+          "part_no": "W001",
+          "name": "평와셔",
+          "spec": "M6",
+          "quantity": 11,
+          "tray": "TRAY 05"
+        },
+        {
+          "part_no": "W002",
+          "name": "스프링와셔",
+          "spec": "M6",
+          "quantity": 6,
+          "tray": "TRAY 06"
+        }
+      ]
+    },
+    {
+      "work_id": "1787407836511-작업지시서_최종양식_v2.pdf",
+      "completed_at": "2026-08-22T23:12:46",
+      "result": "COMPLETED",
+      "duration_seconds": 130,
+      "item_count": 2,
+      "total_quantity": 17,
+      "used_trays": [
+        "TRAY 05",
+        "TRAY 06"
+      ],
+      "items": [
+        {
+          "part_no": "W001",
+          "name": "평와셔",
+          "spec": "M6",
+          "quantity": 11,
+          "tray": "TRAY 05"
+        },
+        {
+          "part_no": "W002",
+          "name": "스프링와셔",
+          "spec": "M6",
+          "quantity": 6,
+          "tray": "TRAY 06"
+        }
+      ]
+    },
+    {
+      "work_id": "1787408654294-작업지시서_최종양식_v2.pdf",
+      "completed_at": "2026-08-22T23:26:25",
+      "result": "COMPLETED",
+      "duration_seconds": 132,
+      "item_count": 2,
+      "total_quantity": 17,
+      "used_trays": [
+        "TRAY 05",
+        "TRAY 06"
+      ],
+      "items": [
+        {
+          "part_no": "W001",
+          "name": "평와셔",
+          "spec": "M6",
+          "quantity": 11,
+          "tray": "TRAY 05"
+        },
+        {
+          "part_no": "W002",
+          "name": "스프링와셔",
+          "spec": "M6",
+          "quantity": 6,
+          "tray": "TRAY 06"
+        }
+      ]
+    },
+    {
+      "work_id": "1787408795384-작업지시서_최종양식_v3.pdf",
+      "completed_at": "2026-08-22T23:28:41",
+      "result": "COMPLETED",
+      "duration_seconds": 127,
+      "item_count": 2,
+      "total_quantity": 18,
+      "used_trays": [
+        "TRAY 01",
+        "TRAY 02"
+      ],
+      "items": [
+        {
+          "part_no": "B001",
+          "name": "육각볼트",
+          "spec": "M6X20",
+          "quantity": 10,
+          "tray": "TRAY 01"
+        },
+        {
+          "part_no": "B002",
+          "name": "육각렌치볼트",
+          "spec": "M5X15",
+          "quantity": 8,
+          "tray": "TRAY 02"
+        }
+      ]
+    },
+    {
+      "work_id": "1787409031563-작업지시서_최종양식_v3.pdf",
+      "completed_at": "2026-08-22T23:32:41",
+      "result": "COMPLETED",
+      "duration_seconds": 130,
+      "item_count": 2,
+      "total_quantity": 18,
+      "used_trays": [
+        "TRAY 01",
+        "TRAY 02"
+      ],
+      "items": [
+        {
+          "part_no": "B001",
+          "name": "육각볼트",
+          "spec": "M6X20",
+          "quantity": 10,
+          "tray": "TRAY 01"
+        },
+        {
+          "part_no": "B002",
+          "name": "육각렌치볼트",
+          "spec": "M5X15",
+          "quantity": 8,
+          "tray": "TRAY 02"
+        }
+      ]
+    },
+    {
+      "work_id": "1787410584873-작업지시서_최종양식_v2.pdf",
+      "completed_at": "2026-08-22T23:58:45",
+      "result": "COMPLETED",
+      "duration_seconds": 140,
+      "item_count": 2,
+      "total_quantity": 17,
+      "used_trays": [
+        "TRAY 05",
+        "TRAY 06"
+      ],
+      "items": [
+        {
+          "part_no": "W001",
+          "name": "평와셔",
+          "spec": "M6",
+          "quantity": 11,
+          "tray": "TRAY 05"
+        },
+        {
+          "part_no": "W002",
+          "name": "스프링와셔",
+          "spec": "M6",
+          "quantity": 6,
+          "tray": "TRAY 06"
+        }
+      ]
+    },
+    {
+      "work_id": "1787411487038-작업지시서_세로형_v3.pdf",
+      "completed_at": "2026-08-23T00:13:51",
+      "result": "COMPLETED",
+      "duration_seconds": 144,
+      "item_count": 2,
+      "total_quantity": 18,
+      "used_trays": [
+        "TRAY 01",
+        "TRAY 02"
+      ],
+      "items": [
+        {
+          "part_no": "B001",
+          "name": "육각볼트",
+          "spec": "M6X20",
+          "quantity": 10,
+          "tray": "TRAY 01"
+        },
+        {
+          "part_no": "B002",
+          "name": "육각렌치볼트",
+          "spec": "M5X15",
+          "quantity": 8,
+          "tray": "TRAY 02"
+        }
+      ]
+    },
+    {
+      "work_id": "1787416029324-작업지시서_세로형_v3.pdf",
+      "completed_at": "2026-08-23T01:29:45",
+      "result": "COMPLETED",
+      "duration_seconds": 157,
+      "item_count": 2,
+      "total_quantity": 18,
+      "used_trays": [
+        "TRAY 01",
+        "TRAY 02"
+      ],
+      "items": [
+        {
+          "part_no": "B001",
+          "name": "육각볼트",
+          "spec": "M6X20",
+          "quantity": 10,
+          "tray": "TRAY 01"
+        },
+        {
+          "part_no": "B002",
+          "name": "육각렌치볼트",
+          "spec": "M5X15",
+          "quantity": 8,
+          "tray": "TRAY 02"
+        }
+      ]
+    }
+  ]
+}

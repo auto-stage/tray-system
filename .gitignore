@@ -37,3 +37,17 @@ captures/
 *.key
 secrets.*
 *.launch
+
+# Frontend dependencies
+frontend/node_modules/
+frontend/dist/
+
+# Backend runtime files
+backend/uploads/
+backend/analysis_result.json
+
+# Python cache
+__pycache__/
+*.pyc
+
+backend/data/inventory_transactions.json

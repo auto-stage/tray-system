@@ -1,19 +1,59 @@
-# marker_to_grip_mm is a rigid design/measured offset in the MARKER coordinate frame.
-# Replace these example values with actual tray geometry later.
+# ArUco ID (mapping key) is the canonical/fixed tray identity.
+# tray_code/display_name/marker_size/marker_to_grip are operator-configurable.
+#
+# marker_to_grip_mm:
+# rigid offset from the ArUco marker origin to the desired grip point,
+# expressed in the MARKER coordinate frame.
+#
+# geometry_calibrated MUST remain false until marker size and grip offset are
+# verified on the real tray. Detection/pose monitoring still works while false,
+# but automatic X/Z correction remains safety-blocked.
+
 trays:
   1:
-    tray_code: "A-01"
+    enabled: true
+    tray_code: "TRAY-01"
+    display_name: "Tray 01"
     marker_size_mm: 50.0
+    geometry_calibrated: false
     marker_to_grip_mm: {x: 80.0, y: 30.0, z: 0.0}
+
   2:
-    tray_code: "A-02"
+    enabled: true
+    tray_code: "TRAY-02"
+    display_name: "Tray 02"
     marker_size_mm: 50.0
+    geometry_calibrated: false
     marker_to_grip_mm: {x: 80.0, y: 30.0, z: 0.0}
+
   3:
-    tray_code: "B-01"
+    enabled: true
+    tray_code: "TRAY-03"
+    display_name: "Tray 03"
     marker_size_mm: 50.0
+    geometry_calibrated: false
     marker_to_grip_mm: {x: 80.0, y: 30.0, z: 0.0}
+
   4:
-    tray_code: "B-02"
+    enabled: true
+    tray_code: "TRAY-04"
+    display_name: "Tray 04"
     marker_size_mm: 50.0
+    geometry_calibrated: false
     marker_to_grip_mm: {x: 80.0, y: 30.0, z: 0.0}
+
+  5:
+    enabled: true
+    tray_code: "TRAY-05"
+    display_name: "Tray 05"
+    marker_size_mm: 50.0
+    geometry_calibrated: false
+    marker_to_grip_mm: {x: 0.0, y: 0.0, z: 0.0}
+
+  6:
+    enabled: true
+    tray_code: "TRAY-06"
+    display_name: "Tray 06"
+    marker_size_mm: 50.0
+    geometry_calibrated: false
+    marker_to_grip_mm: {x: 0.0, y: 0.0, z: 0.0}

@@ -21,13 +21,37 @@ def load_trays(path: str | Path) -> dict[int, TrayDefinition]:
     for raw_id, raw in data["trays"].items():
         marker_id = int(raw_id)
         off = raw["marker_to_grip_mm"]
+        tray_code = str(
+            raw.get(
+                "tray_code",
+                f"TRAY-{marker_id:02d}",
+            )
+        )
         out[marker_id] = TrayDefinition(
             marker_id=marker_id,
-            tray_code=str(raw["tray_code"]),
+            tray_code=tray_code,
             marker_size_mm=float(raw["marker_size_mm"]),
             grip_offset_marker_mm=np.array(
                 [float(off["x"]), float(off["y"]), float(off.get("z", 0.0))],
                 dtype=float,
+            ),
+            display_name=str(
+                raw.get(
+                    "display_name",
+                    tray_code,
+                )
+            ),
+            enabled=bool(
+                raw.get(
+                    "enabled",
+                    True,
+                )
+            ),
+            geometry_calibrated=bool(
+                raw.get(
+                    "geometry_calibrated",
+                    False,
+                )
             ),
         )
     return out

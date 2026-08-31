@@ -1,0 +1,262 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700&display=swap');
+@import 'tailwindcss';
+
+:root {
+  --hmi-navy: #0d1f3c;
+  --hmi-navy-dark: #07111f;
+  --hmi-navy-mid: #152a4e;
+  --hmi-work-bg: #dfe3ea;
+  --hmi-panel: #ffffff;
+  --hmi-border: #8d97a5;
+  --hmi-border-light: #c4cad4;
+  --hmi-text: #0f1923;
+  --hmi-text-muted: #4a5568;
+
+  --hmi-green: #16a34a;
+  --hmi-green-bg: #dcfce7;
+  --hmi-green-dark: #14532d;
+
+  --hmi-blue: #1d4ed8;
+  --hmi-blue-bg: #dbeafe;
+  --hmi-blue-light: #3b82f6;
+
+  --hmi-yellow: #b45309;
+  --hmi-yellow-bg: #fef3c7;
+  --hmi-yellow-accent: #f59e0b;
+
+  --hmi-orange: #c05a05;
+  --hmi-orange-bg: #fff0e0;
+  --hmi-orange-accent: #f97316;
+
+  --hmi-red: #b91c1c;
+  --hmi-red-bg: #fee2e2;
+  --hmi-red-accent: #dc2626;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: 'Inter', 'Noto Sans KR', sans-serif;
+  background: var(--hmi-work-bg);
+  color: var(--hmi-text);
+  font-size: 14px;
+  overflow: hidden;
+}
+
+.mono {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #c4cad4; }
+::-webkit-scrollbar-thumb { background: #6b7280; }
+
+/* HMI Panel */
+.hmi-panel {
+  background: var(--hmi-panel);
+  border: 1px solid var(--hmi-border);
+}
+
+/* Status badges */
+.badge-green { background: var(--hmi-green-bg); color: var(--hmi-green); border: 1px solid var(--hmi-green); font-weight: 600; }
+.badge-blue { background: var(--hmi-blue-bg); color: var(--hmi-blue); border: 1px solid var(--hmi-blue); font-weight: 600; }
+.badge-yellow { background: var(--hmi-yellow-bg); color: var(--hmi-yellow); border: 1px solid var(--hmi-yellow-accent); font-weight: 600; }
+.badge-red { background: var(--hmi-red-bg); color: var(--hmi-red); border: 1px solid var(--hmi-red-accent); font-weight: 600; }
+.badge-orange { background: var(--hmi-orange-bg); color: var(--hmi-orange); border: 1px solid var(--hmi-orange-accent); font-weight: 600; }
+.badge-gray { background: #f3f4f6; color: #6b7280; border: 1px solid #9ca3af; font-weight: 600; }
+
+/* Buttons */
+.btn-primary {
+  background: var(--hmi-blue);
+  color: white;
+  border: 1px solid #1e3a8a;
+  padding: 8px 20px;
+  font-weight: 600;
+  cursor: pointer;
+  font-size: 14px;
+  font-family: 'Inter', 'Noto Sans KR', sans-serif;
+  transition: background 0.1s;
+}
+.btn-primary:hover { background: #1a44c4; }
+
+.btn-secondary {
+  background: #4b5563;
+  color: white;
+  border: 1px solid #374151;
+  padding: 8px 20px;
+  font-weight: 600;
+  cursor: pointer;
+  font-size: 14px;
+  font-family: 'Inter', 'Noto Sans KR', sans-serif;
+}
+.btn-secondary:hover { background: #374151; }
+
+.btn-danger {
+  background: var(--hmi-red-accent);
+  color: white;
+  border: 1px solid #991b1b;
+  padding: 8px 20px;
+  font-weight: 600;
+  cursor: pointer;
+  font-size: 14px;
+  font-family: 'Inter', 'Noto Sans KR', sans-serif;
+}
+.btn-danger:hover { background: #b91c1c; }
+
+.btn-warning {
+  background: var(--hmi-yellow-accent);
+  color: #7c2d12;
+  border: 1px solid var(--hmi-yellow);
+  padding: 8px 20px;
+  font-weight: 600;
+  cursor: pointer;
+  font-size: 14px;
+  font-family: 'Inter', 'Noto Sans KR', sans-serif;
+}
+.btn-warning:hover { background: #d97706; }
+
+.btn-green {
+  background: var(--hmi-green);
+  color: white;
+  border: 1px solid #15803d;
+  padding: 8px 20px;
+  font-weight: 600;
+  cursor: pointer;
+  font-size: 14px;
+  font-family: 'Inter', 'Noto Sans KR', sans-serif;
+}
+.btn-green:hover { background: #15803d; }
+
+/* Progress bar */
+.progress-bar {
+  height: 8px;
+  background: #d1d5db;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  background: var(--hmi-green);
+  transition: width 0.5s ease;
+}
+.progress-fill-blue {
+  height: 100%;
+  background: var(--hmi-blue);
+  transition: width 0.5s ease;
+}
+
+/* Blinking animation */
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+.blink { animation: blink 1s infinite; }
+
+@keyframes pulse-green {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(22, 163, 74, 0.4); }
+  50% { box-shadow: 0 0 0 6px rgba(22, 163, 74, 0); }
+}
+.pulse-green { animation: pulse-green 1.5s infinite; }
+
+@keyframes scan-line {
+  0% { top: 0; }
+  100% { top: 100%; }
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.spin { animation: spin 1s linear infinite; }
+
+/* Camera live overlay effect */
+.camera-live {
+  background: #0a0f1a;
+  position: relative;
+  overflow: hidden;
+}
+.camera-live::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: rgba(34, 197, 94, 0.6);
+  animation: scan-line 3s linear infinite;
+}
+
+/* Table styles */
+.hmi-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.hmi-table th {
+  background: #1e3a5f;
+  color: white;
+  padding: 9px 12px;
+  text-align: left;
+  font-weight: 600;
+  border: 1px solid #2d4a70;
+  font-size: 12px;
+  letter-spacing: 0.03em;
+}
+.hmi-table td {
+  padding: 8px 12px;
+  border: 1px solid var(--hmi-border-light);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+}
+.hmi-table tr:nth-child(even) td { background: #f8f9fa; }
+.hmi-table tr:hover td { background: #e8f0fe; }
+
+/* Section header */
+.section-header {
+  background: var(--hmi-navy);
+  color: white;
+  padding: 7px 14px;
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border-bottom: 2px solid var(--hmi-blue-light);
+}
+
+/* Status dot */
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+/* E-STOP button */
+.estop-btn {
+  background: var(--hmi-red-accent);
+  color: white;
+  font-weight: 900;
+  font-size: 13px;
+  padding: 6px 14px;
+  border: 2px solid #7f1d1d;
+  cursor: pointer;
+  letter-spacing: 0.05em;
+  font-family: 'JetBrains Mono', monospace;
+  animation: estop-pulse 2s infinite;
+}
+@keyframes estop-pulse {
+  0%, 100% { border-color: #7f1d1d; }
+  50% { border-color: #fca5a5; }
+}
+.estop-btn:hover { background: #b91c1c; }
