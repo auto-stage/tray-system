@@ -706,13 +706,104 @@ function MainScreen({
 // ============================================================
 // SCREEN: CAMERA CAPTURE
 // ============================================================
-function CameraCaptureScreen({ onUse, onCancel }: { onUse: () => void; onCancel: () => void }) {
-  const [captured, setCaptured] = useState(false)
-  const [flashVisible, setFlashVisible] = useState(false)
+function CameraCaptureScreen({
+  onUse,
+  onCancel,
+}: {
+  onUse: (file: File) => void | Promise<void>
+  onCancel: () => void
+}) {
+  const api = 'http://127.0.0.1:8000'
+  const [capturedUrl, setCapturedUrl] = useState<string | null>(null)
+  const [capturedBlob, setCapturedBlob] = useState<Blob | null>(null)
+  const [status, setStatus] = useState<any>(null)
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState('')
+  const [streamKey, setStreamKey] = useState(0)
 
-  const handleCapture = () => {
-    setFlashVisible(true)
-    setTimeout(() => { setFlashVisible(false); setCaptured(true) }, 300)
+  const connected = status?.connected === true
+
+  const loadStatus = async () => {
+    try {
+      const response = await fetch(`${api}/work-order-camera/status`)
+      if (!response.ok) throw new Error(`Camera status 오류: ${response.status}`)
+      setStatus(await response.json())
+    } catch (error) {
+      console.error('[WORK ORDER CAMERA] status 오류:', error)
+      setStatus(null)
+    }
+  }
+
+  useEffect(() => {
+    loadStatus()
+    const timer = setInterval(loadStatus, 1000)
+    return () => clearInterval(timer)
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      if (capturedUrl) URL.revokeObjectURL(capturedUrl)
+    }
+  }, [capturedUrl])
+
+  const clearCapture = () => {
+    if (capturedUrl) URL.revokeObjectURL(capturedUrl)
+    setCapturedUrl(null)
+    setCapturedBlob(null)
+    setMessage('')
+    setStreamKey(key => key + 1)
+  }
+
+  const handleCapture = async () => {
+    if (!connected || busy) return
+
+    setBusy(true)
+    setMessage('촬영 중...')
+
+    try {
+      const response = await fetch(
+        `${api}/work-order-camera/snapshot?v=${Date.now()}`,
+        { cache: 'no-store' }
+      )
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}))
+        throw new Error(data?.detail ?? `촬영 오류: ${response.status}`)
+      }
+
+      const blob = await response.blob()
+      if (!blob.type.startsWith('image/')) {
+        throw new Error('카메라 응답이 이미지 형식이 아닙니다.')
+      }
+
+      if (capturedUrl) URL.revokeObjectURL(capturedUrl)
+      const url = URL.createObjectURL(blob)
+      setCapturedBlob(blob)
+      setCapturedUrl(url)
+      setMessage('촬영 완료')
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : '촬영 실패'
+      setMessage(`ERROR: ${msg}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleUse = async () => {
+    if (!capturedBlob || busy) return
+
+    const file = new File(
+      [capturedBlob],
+      `work_order_camera_${Date.now()}.jpg`,
+      { type: capturedBlob.type || 'image/jpeg' }
+    )
+
+    setBusy(true)
+    try {
+      await onUse(file)
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (
@@ -721,100 +812,81 @@ function CameraCaptureScreen({ onUse, onCancel }: { onUse: () => void; onCancel:
         📷 작업지시서 촬영
       </div>
       <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--hmi-work-bg)', padding: 24 }}>
-        <div style={{ width: 700, display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {/* Status bar */}
+        <div style={{ width: 760, display: 'flex', flexDirection: 'column', gap: 16 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span className="status-dot" style={{ background: '#22c55e' }} />
-            <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 12, fontWeight: 700, color: 'var(--hmi-green)' }}>
-              CAMERA CONNECTED
+            <span className="status-dot" style={{ background: connected ? '#22c55e' : '#ef4444' }} />
+            <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 12, fontWeight: 700, color: connected ? 'var(--hmi-green)' : 'var(--hmi-red)' }}>
+              {connected ? 'WORK ORDER CAMERA CONNECTED' : 'WORK ORDER CAMERA DISCONNECTED'}
+            </span>
+            <span style={{ marginLeft: 'auto', fontFamily: 'JetBrains Mono, monospace', fontSize: 10, color: '#64748b' }}>
+              INDEX {status?.camera_index ?? '--'} · {status?.image_width ?? '--'}×{status?.image_height ?? '--'}
             </span>
           </div>
 
-          {/* Camera view */}
           <div style={{ position: 'relative', background: '#0a0f1a', border: '2px solid #2d4a70', overflow: 'hidden', aspectRatio: '4/3' }}>
-            {flashVisible && (
-              <div style={{ position: 'absolute', inset: 0, background: 'white', zIndex: 10, opacity: 0.9 }} />
-            )}
-            {!captured ? (
-              <>
-                {/* Simulated live camera */}
-                <div className="camera-live" style={{ position: 'absolute', inset: 0 }}>
-                  {/* Mock document lines */}
-                  <div style={{ position: 'absolute', inset: '15%', border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.04)' }} />
-                  <div style={{ position: 'absolute', top: '20%', left: '18%', right: '18%', borderTop: '1px solid rgba(255,255,255,0.1)' }} />
-                  <div style={{ position: 'absolute', top: '28%', left: '18%', right: '18%', borderTop: '1px solid rgba(255,255,255,0.07)' }} />
-                  <div style={{ position: 'absolute', top: '36%', left: '18%', right: '18%', borderTop: '1px solid rgba(255,255,255,0.07)' }} />
-                  <div style={{ position: 'absolute', top: '50%', left: '18%', right: '18%', borderTop: '1px solid rgba(255,255,255,0.07)' }} />
-                </div>
-                {/* Guide frame */}
-                <div style={{
-                  position: 'absolute', inset: '8%',
-                  border: '2px dashed rgba(34,197,94,0.7)',
-                  pointerEvents: 'none'
-                }}>
-                  {/* Corner markers */}
-                  {[{top:0,left:0},{top:0,right:0},{bottom:0,left:0},{bottom:0,right:0}].map((s,i) => (
-                    <div key={i} style={{
-                      position: 'absolute', ...s,
-                      width: 20, height: 20,
-                      borderTop: (s.top === 0) ? '3px solid #22c55e' : 'none',
-                      borderBottom: (s as any).bottom === 0 ? '3px solid #22c55e' : 'none',
-                      borderLeft: (s.left === 0) ? '3px solid #22c55e' : 'none',
-                      borderRight: (s as any).right === 0 ? '3px solid #22c55e' : 'none',
-                    }} />
-                  ))}
-                  <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', color: 'rgba(255,255,255,0.5)', fontSize: 11, fontFamily: 'JetBrains Mono, monospace', whiteSpace: 'nowrap' }}>
-                    작업지시서를 안에 배치하세요
-                  </div>
-                </div>
-                {/* LIVE indicator */}
-                <div style={{ position: 'absolute', top: 10, left: 10, display: 'flex', alignItems: 'center', gap: 5 }}>
-                  <span className="status-dot blink" style={{ background: '#ef4444' }} />
-                  <span style={{ color: 'white', fontSize: 11, fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>LIVE</span>
-                </div>
-                <div style={{ position: 'absolute', top: 10, right: 10, color: 'rgba(255,255,255,0.6)', fontSize: 10, fontFamily: 'JetBrains Mono, monospace' }}>CAM-01</div>
-              </>
+            {capturedUrl ? (
+              <img
+                src={capturedUrl}
+                alt="Captured work order"
+                style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }}
+              />
+            ) : connected ? (
+              <img
+                key={streamKey}
+                src={`${api}/work-order-camera/stream?v=${streamKey}`}
+                alt="Work order live camera"
+                style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }}
+              />
             ) : (
-              <>
-                {/* Captured image mockup */}
-                <div style={{ position: 'absolute', inset: 0, background: '#f0f0ee', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  <div style={{ width: '70%', background: 'white', padding: 20, border: '1px solid #ccc', boxShadow: '0 4px 20px rgba(0,0,0,0.3)' }}>
-                    <div style={{ borderBottom: '2px solid #1e3a5f', paddingBottom: 8, marginBottom: 10, fontWeight: 800, fontSize: 13, color: '#1e3a5f' }}>
-                      작업지시서 / WORK ORDER
-                    </div>
-                    <div style={{ fontSize: 11, color: '#374151', fontFamily: 'JetBrains Mono, monospace', lineHeight: 1.6 }}>
-                      <div>작업번호: WO-20260817-001</div>
-                      <div>발행일자: 2026-08-17</div>
-                      <div style={{ marginTop: 6, marginBottom: 4, fontWeight: 700 }}>품목 목록:</div>
-                      <div>B001 | 육각볼트 M6X20 | 10 EA</div>
-                      <div>B002 | 육각렌치볼트 M5X15 | 8 EA</div>
-                      <div>S001 | 십자머리나사 M4X12 | 20 EA</div>
-                    </div>
-                  </div>
-                </div>
-                <div style={{ position: 'absolute', top: 10, left: 10, background: '#16a34a', color: 'white', fontSize: 10, fontFamily: 'JetBrains Mono, monospace', padding: '2px 8px', fontWeight: 700 }}>
-                  CAPTURED
-                </div>
-              </>
+              <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#94a3b8', fontFamily: 'JetBrains Mono, monospace', textAlign: 'center', padding: 24 }}>
+                WORK_ORDER_CAMERA_MODE=camera로 Backend를 실행하고<br />고정 카메라 index를 지정하세요.
+              </div>
             )}
+
+            {!capturedUrl && (
+              <div style={{ position: 'absolute', inset: '8%', border: '2px dashed rgba(34,197,94,0.75)', pointerEvents: 'none' }}>
+                {[{top:0,left:0},{top:0,right:0},{bottom:0,left:0},{bottom:0,right:0}].map((s,i) => (
+                  <div key={i} style={{
+                    position: 'absolute', ...s,
+                    width: 20, height: 20,
+                    borderTop: (s.top === 0) ? '3px solid #22c55e' : 'none',
+                    borderBottom: (s as any).bottom === 0 ? '3px solid #22c55e' : 'none',
+                    borderLeft: (s.left === 0) ? '3px solid #22c55e' : 'none',
+                    borderRight: (s as any).right === 0 ? '3px solid #22c55e' : 'none',
+                  }} />
+                ))}
+                <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', color: 'rgba(255,255,255,0.72)', fontSize: 11, fontFamily: 'JetBrains Mono, monospace', whiteSpace: 'nowrap', background: 'rgba(0,0,0,0.35)', padding: '3px 7px' }}>
+                  작업지시서를 가이드 안에 배치하세요
+                </div>
+              </div>
+            )}
+
+            <div style={{ position: 'absolute', top: 10, left: 10, background: capturedUrl ? '#16a34a' : '#b91c1c', color: 'white', fontSize: 10, fontFamily: 'JetBrains Mono, monospace', padding: '2px 8px', fontWeight: 700 }}>
+              {capturedUrl ? 'CAPTURED' : 'LIVE'}
+            </div>
           </div>
 
-          {/* Buttons */}
+          {message && (
+            <div style={{ fontSize: 11, color: message.startsWith('ERROR') ? 'var(--hmi-red)' : '#64748b', fontFamily: 'JetBrains Mono, monospace' }}>
+              {message}
+            </div>
+          )}
+
           <div style={{ display: 'flex', gap: 10 }}>
-            {!captured ? (
+            {!capturedUrl ? (
               <>
                 <button className="btn-secondary" style={{ flex: 1, padding: '12px' }} onClick={onCancel}>✕ 취소</button>
-                <button className="btn-primary" style={{ flex: 2, padding: '12px', fontSize: 16 }} onClick={handleCapture}>
-                  📷 촬영
+                <button className="btn-primary" disabled={!connected || busy} style={{ flex: 2, padding: '12px', fontSize: 16 }} onClick={handleCapture}>
+                  📷 실제 촬영
                 </button>
               </>
             ) : (
               <>
-                <button className="btn-warning" style={{ flex: 1, padding: '12px' }} onClick={() => setCaptured(false)}>
+                <button className="btn-warning" disabled={busy} style={{ flex: 1, padding: '12px' }} onClick={clearCapture}>
                   ↺ 다시 촬영
                 </button>
-                <button className="btn-green" style={{ flex: 2, padding: '12px', fontSize: 15 }} onClick={onUse}>
-                  ✓ 이 사진 사용
+                <button className="btn-green" disabled={busy} style={{ flex: 2, padding: '12px', fontSize: 15 }} onClick={handleUse}>
+                  ✓ 이 사진으로 OCR 분석
                 </button>
               </>
             )}
@@ -3999,6 +4071,7 @@ function CameraControlScreen({
   const markerDetected = detection?.detected === true
   const pose = detection?.pose_rpy_deg
   const grip = detection?.grip_target_camera_mm
+  const correction = detection?.stage_correction_delta_mm
   const sampleCount = Number(calibration?.sample_count ?? 0)
   const minimumSamples = Number(calibration?.minimum_samples ?? 10)
 
@@ -4223,10 +4296,10 @@ function CameraControlScreen({
               <div>PROFILE : {status?.camera_profile_name ?? '--'}</div>
               <div>SIZE : {status?.image_width ?? '--'} × {status?.image_height ?? '--'}</div>
               <div>RMS : {formatValue(status?.rms_reprojection_error, 4)}</div>
+              <div>CAMERA MOUNT : {status?.camera_mount_mode ?? '--'}</div>
               <div>
-                EXTRINSIC :
-                {' '}
-                {status?.camera_to_stage_calibrated ? 'CALIBRATED' : 'NOT CALIBRATED'}
+                CAMERA→CARRIAGE :{' '}
+                {status?.moving_camera_alignment_calibrated ? 'CALIBRATED' : 'NOT CALIBRATED'}
               </div>
             </div>
           </div>
@@ -4278,8 +4351,11 @@ function CameraControlScreen({
                 ['Grip X', `${formatValue(grip?.x)} mm`],
                 ['Grip Y', `${formatValue(grip?.y)} mm`],
                 ['Grip Z', `${formatValue(grip?.z)} mm`],
+                ['Correction X', `${formatValue(correction?.x)} mm`],
+                ['Correction Z', `${formatValue(correction?.z)} mm`],
+                ['Depth Error', `${formatValue(detection?.depth_error_mm)} mm`],
                 [
-                  'Stage Correction',
+                  'X/Z Correction',
                   detection?.ready_for_stage_correction ? 'READY' : 'BLOCKED'
                 ],
               ].map(([label, value]) => (
@@ -7100,7 +7176,7 @@ export default function App() {
 
         {screen === 'CAMERA_CAPTURE' && (
           <CameraCaptureScreen
-            onUse={() => nav('ANALYZING')}
+            onUse={handleFileUpload}
             onCancel={() => nav('MAIN')}
           />
         )}

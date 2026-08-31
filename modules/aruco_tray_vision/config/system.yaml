@@ -1,42 +1,63 @@
 aruco_dictionary: "DICT_4X4_50"
 
 pose_limits:
-  # Provisional safety/tolerance values.
-  # Replace only after real gripper/tray tolerance verification.
+  # Provisional values. Tune after real gripper/tray testing.
   roll_abs_max_deg: 180.0
   pitch_abs_max_deg: 30.0
   yaw_abs_max_deg: 30.0
 
 integration:
-  # Keep this undecided until the physical camera installation is fixed.
-  camera_mount_mode: "UNDECIDED"  # EYE_IN_HAND or FIXED_OVERHEAD
+  # ArUco camera is rigidly mounted on the final X/Z moving carriage.
+  camera_mount_mode: "MOVING_XZ_CARRIAGE"
 
-  camera_to_stage:
-    # PLACEHOLDER ONLY.
-    # Identity matrix keeps the software/config structure complete before
-    # installation. Because calibrated=false, backend MUST NOT use it for
-    # real stage correction.
+  moving_camera_alignment:
+    # Fixed transform: camera frame -> moving carriage frame.
+    # Carriage frame convention:
+    #   +X = Stage X positive direction
+    #   +Z = Stage Z positive direction
+    #   +Y = gripper approach/depth direction
+    #
+    # Identity is a software placeholder only.
+    # Keep calibrated=false until real installation calibration is complete.
     calibrated: false
-    matrix_4x4:
+    camera_to_carriage_4x4:
       - [1.0, 0.0, 0.0, 0.0]
       - [0.0, 1.0, 0.0, 0.0]
       - [0.0, 0.0, 1.0, 0.0]
       - [0.0, 0.0, 0.0, 1.0]
 
-  # Physical stage is two-axis X/Z in the current integration branch.
-  stage_axis_mapping:
-    axis1: "x"
-    axis2: "z"
+    # Fixed gripper reference point while the extraction axis is retracted,
+    # expressed in the moving carriage frame.
+    # Replace after camera/gripper mechanical installation.
+    gripper_reference_carriage_mm:
+      x: 0.0
+      y: 0.0
+      z: 0.0
 
-  # Backend uses TRAY 01~06. Existing ArUco definitions currently contain
-  # marker IDs 1~4, therefore those are mapped 1:1 here.
-  # Add 5/6 only after their real marker/tray geometry is registered.
-  tray_id_mapping:
-    1: 1
-    2: 2
-    3: 3
-    4: 4
+    # Leave null until real repeatability/grasp tests determine safe limits.
+    stage_alignment_tolerance_mm:
+      x: null
+      z: null
 
-  # Reserved for future hardware integration.
-  camera_to_gripper_tcp_mm: null
-  stage_feedback_source: null
+    # Required before enabling automatic correction.
+    # Any single Vision correction larger than these values is blocked.
+    max_single_correction_mm:
+      x: null
+      z: null
+
+  correction_loop:
+    # Planned closed-loop sequence:
+    # slot move -> observe -> X/Z correction -> re-observe -> verify.
+    enabled: false
+    max_iterations: 2
+    reobserve_after_move: true
+
+  gripper_depth_axis:
+    # Motor/actuator has not been selected yet.
+    # No depth motion command is generated while mode is UNDECIDED.
+    mode: "UNDECIDED"
+    calibrated: false
+    axis_in_carriage: "y"
+    min_mm: null
+    max_mm: null
+    retracted_reference_mm: null

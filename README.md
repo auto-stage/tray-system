@@ -21,7 +21,9 @@ Tray 6DoF Pose 추정
       ↓
 3D Grip Target 계산
       ↓
-Camera → Stage 좌표 변환
+Moving Camera → Carriage 좌표 변환
+      ↓
+X/Z 상대 오차 보정
       ↓
 PC Stage Control
       ↓ Serial/UART
@@ -54,7 +56,8 @@ X/Z 2축 스테이지 구동
    - 6DoF Pose 추정
    - 3D Grip Target 계산
    - Roll/Pitch/Yaw 유효성 검사
-   - 추후 Camera → Stage extrinsic 적용 예정
+   - 이동부 Camera → Carriage 변환
+   - X/Z 상대 보정량 계산
 
 현재 세 파트는 완전 통합 전 단계이며, 각 모듈의 독립 동작을 우선 유지합니다.
 
@@ -179,7 +182,7 @@ ArUco 마커 기반 트레이 인식 및 3D 위치·자세 추정 모듈입니�
 - 카메라 캘리브레이션
 - Stage Serial 연계 인터페이스
 
-현재 Camera → Stage extrinsic calibration은 실제 스테이지 통합 시 적용할 예정입니다.
+최종 ArUco 카메라는 X/Z 이동부에 고정되므로 Camera → Carriage 캘리브레이션과 현재 Stage 위치를 결합합니다. 실제 장착 전에는 자동 X/Z 보정이 안전 차단됩니다.
 
 ### `integration/`
 
@@ -194,7 +197,9 @@ ArUco Vision
  ↓
 3D Grip Target
  ↓
-Camera → Stage Transform
+Camera → Moving Carriage Transform
+ ↓
+X/Z Relative Correction
  ↓
 Stage Control
  ↓

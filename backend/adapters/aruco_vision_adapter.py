@@ -48,9 +48,10 @@ class ArucoVisionAdapter(VisionAdapter):
     - Reuse existing ArucoVision detection and 6DoF pose estimation.
     - Reuse existing build_vision_decision() for grip target / pose safety.
     - Expose results in backend-friendly JSON.
-    - Convert marker ID to backend TRAY 01~06 ID.
-    - Expose Camera->Stage transformed target only when extrinsic calibration
-      is explicitly marked calibrated=true.
+    - Use ArUco marker ID as the canonical tray identity.
+    - Convert camera-frame grip target into the moving X/Z carriage frame.
+    - Expose X/Z correction deltas only when carriage alignment and tray
+      geometry are explicitly calibrated.
 
     Non-responsibilities
     --------------------
@@ -84,6 +85,7 @@ class ArucoVisionAdapter(VisionAdapter):
         marker_sizes = {
             marker_id: tray.marker_size_mm
             for marker_id, tray in self.trays.items()
+            if tray.enabled
         }
         self.vision = ArucoVision(
             marker_sizes_mm=marker_sizes,
@@ -109,13 +111,12 @@ class ArucoVisionAdapter(VisionAdapter):
         self._calibration_lock = threading.Lock()
 
         integration = self.system.get("integration", {})
-        self.stage_axis_mapping = integration.get(
-            "stage_axis_mapping",
-            {"axis1": "x", "axis2": "z"},
-        )
-        self.tray_id_mapping = self._load_tray_id_mapping(
-            integration.get("tray_id_mapping")
-        )
+        self.camera_mount_mode = str(
+            integration.get(
+                "camera_mount_mode",
+                "MOVING_XZ_CARRIAGE",
+            )
+        ).strip().upper()
 
     @staticmethod
     def _resolve_path(path: str | Path) -> Path:
@@ -124,65 +125,351 @@ class ArucoVisionAdapter(VisionAdapter):
             return candidate
         return (REPO_ROOT / candidate).resolve()
 
-    def _load_tray_id_mapping(
+    def _backend_tray_id(
         self,
-        raw_mapping: dict[Any, Any] | None,
-    ) -> dict[int, int]:
-        if not raw_mapping:
-            # Default: ArUco marker ID == backend tray ID.
-            return {
-                marker_id: marker_id
-                for marker_id in self.trays
-            }
+        marker_id: int,
+    ) -> int | None:
+        """
+        ArUco marker ID is the canonical/fixed tray identity.
 
-        mapping: dict[int, int] = {}
-        for marker_id, tray_id in raw_mapping.items():
-            mapping[int(marker_id)] = int(tray_id)
-        return mapping
-
-    def _camera_to_stage_matrix(self) -> np.ndarray | None:
-        integration = self.system.get("integration", {})
-        cfg = integration.get("camera_to_stage", {})
-
-        # Safety gate:
-        # A placeholder matrix may exist before physical installation, but it
-        # MUST NOT be used until calibrated=true is explicitly set.
-        if not bool(cfg.get("calibrated", False)):
+        Human-facing names such as tray_code/display_name are configurable
+        and must never affect physical mapping or Vision identity.
+        """
+        tray = self.trays.get(
+            int(marker_id)
+        )
+        if (
+            tray is None
+            or not tray.enabled
+        ):
             return None
+        return int(marker_id)
 
-        raw_matrix = cfg.get("matrix_4x4")
-        if raw_matrix is None:
-            return None
+    @staticmethod
+    def _xyz_dict(
+        values: np.ndarray,
+    ) -> dict[str, float]:
+        x, y, z = np.asarray(
+            values,
+            dtype=float,
+        ).reshape(3)
+        return {
+            "x": float(x),
+            "y": float(y),
+            "z": float(z),
+        }
 
-        matrix = np.asarray(raw_matrix, dtype=float)
-        if matrix.size != 16:
-            raise ValueError(
-                "camera_to_stage.matrix_4x4 must contain exactly 16 values"
-            )
-        return matrix.reshape(4, 4)
-
-    def _extrinsic_configured(self) -> bool:
-        cfg = (
+    def _moving_alignment_cfg(
+        self,
+    ) -> dict[str, Any]:
+        return (
             self.system
             .get("integration", {})
-            .get("camera_to_stage", {})
+            .get(
+                "moving_camera_alignment",
+                {},
+            )
         )
-        raw_matrix = cfg.get("matrix_4x4")
-        if raw_matrix is None:
+
+    def _moving_alignment_configured(
+        self,
+    ) -> bool:
+        cfg = self._moving_alignment_cfg()
+        raw_matrix = cfg.get(
+            "camera_to_carriage_4x4"
+        )
+        reference = cfg.get(
+            "gripper_reference_carriage_mm"
+        )
+
+        if (
+            raw_matrix is None
+            or not isinstance(
+                reference,
+                dict,
+            )
+        ):
             return False
 
         try:
-            return np.asarray(raw_matrix, dtype=float).size == 16
-        except (TypeError, ValueError):
+            matrix_ok = (
+                np.asarray(
+                    raw_matrix,
+                    dtype=float,
+                ).size
+                == 16
+            )
+            reference_ok = all(
+                key in reference
+                for key in (
+                    "x",
+                    "y",
+                    "z",
+                )
+            )
+            return bool(
+                matrix_ok
+                and reference_ok
+            )
+        except (
+            TypeError,
+            ValueError,
+        ):
             return False
 
-    def _extrinsic_calibrated(self) -> bool:
+    def _moving_alignment_calibrated(
+        self,
+    ) -> bool:
+        cfg = self._moving_alignment_cfg()
+        return bool(
+            cfg.get(
+                "calibrated",
+                False,
+            )
+        ) and self._moving_alignment_configured()
+
+    def _camera_to_carriage_matrix(
+        self,
+    ) -> np.ndarray | None:
+        if not self._moving_alignment_calibrated():
+            return None
+
+        matrix = np.asarray(
+            self._moving_alignment_cfg()[
+                "camera_to_carriage_4x4"
+            ],
+            dtype=float,
+        )
+
+        if matrix.size != 16:
+            raise ValueError(
+                "moving_camera_alignment."
+                "camera_to_carriage_4x4 must contain "
+                "exactly 16 values"
+            )
+
+        return matrix.reshape(
+            4,
+            4,
+        )
+
+    def _gripper_reference_carriage_mm(
+        self,
+    ) -> np.ndarray | None:
+        if not self._moving_alignment_configured():
+            return None
+
+        raw = (
+            self._moving_alignment_cfg()
+            .get(
+                "gripper_reference_carriage_mm",
+                {},
+            )
+        )
+
+        return np.array(
+            [
+                float(raw["x"]),
+                float(raw["y"]),
+                float(raw["z"]),
+            ],
+            dtype=float,
+        )
+
+    def _alignment_tolerance_mm(
+        self,
+    ) -> dict[str, float | None]:
+        raw = (
+            self._moving_alignment_cfg()
+            .get(
+                "stage_alignment_tolerance_mm",
+                {},
+            )
+        )
+
+        def optional_float(
+            value: Any,
+        ) -> float | None:
+            if value is None:
+                return None
+            return float(value)
+
+        return {
+            "x": optional_float(
+                raw.get("x")
+            ),
+            "z": optional_float(
+                raw.get("z")
+            ),
+        }
+
+    @staticmethod
+    def _transform_point_4x4(
+        matrix_4x4: np.ndarray,
+        point_xyz_mm: np.ndarray,
+    ) -> np.ndarray:
+        point = np.asarray(
+            point_xyz_mm,
+            dtype=float,
+        ).reshape(3)
+
+        homogeneous = np.concatenate(
+            [
+                point,
+                np.array(
+                    [1.0],
+                    dtype=float,
+                ),
+            ]
+        )
+
+        transformed = (
+            np.asarray(
+                matrix_4x4,
+                dtype=float,
+            ).reshape(
+                4,
+                4,
+            )
+            @ homogeneous
+        )
+
+        return transformed[:3]
+
+    def _compute_moving_alignment(
+        self,
+        target_camera_mm: np.ndarray,
+    ) -> dict[str, Any]:
+        """
+        Convert the grip target into the moving carriage frame.
+
+        Carriage frame convention:
+          +X = physical Stage X positive direction
+          +Z = physical Stage Z positive direction
+          +Y = gripper approach/depth direction
+
+        The camera is rigidly mounted to the X/Z moving carriage, therefore
+        there is no single fixed Camera->Stage absolute transform. Instead,
+        the fixed Camera->Carriage transform produces a RELATIVE X/Z
+        correction. The current Stage X/Z position can later be added by the
+        Stage coordinator to obtain an absolute motion target.
+        """
+        matrix = (
+            self._camera_to_carriage_matrix()
+        )
+        reference = (
+            self._gripper_reference_carriage_mm()
+        )
+
+        if (
+            matrix is None
+            or reference is None
+        ):
+            return {
+                "target_carriage_mm": None,
+                "gripper_reference_carriage_mm": None,
+                "alignment_error_carriage_mm": None,
+                "stage_correction_delta_mm": None,
+                "depth_error_mm": None,
+                "alignment_ok": None,
+            }
+
+        target_carriage = (
+            self._transform_point_4x4(
+                matrix,
+                target_camera_mm,
+            )
+        )
+        error = (
+            target_carriage
+            - reference
+        )
+
+        correction = {
+            "x": float(error[0]),
+            "z": float(error[2]),
+        }
+
+        tolerance = (
+            self._alignment_tolerance_mm()
+        )
+
+        if (
+            tolerance["x"] is None
+            or tolerance["z"] is None
+        ):
+            alignment_ok = None
+        else:
+            alignment_ok = bool(
+                abs(correction["x"])
+                <= tolerance["x"]
+                and abs(correction["z"])
+                <= tolerance["z"]
+            )
+
+        return {
+            "target_carriage_mm": self._xyz_dict(
+                target_carriage
+            ),
+            "gripper_reference_carriage_mm": self._xyz_dict(
+                reference
+            ),
+            "alignment_error_carriage_mm": self._xyz_dict(
+                error
+            ),
+            "stage_correction_delta_mm": correction,
+            "depth_error_mm": float(
+                error[1]
+            ),
+            "alignment_ok": alignment_ok,
+        }
+
+    def _gripper_depth_status(
+        self,
+    ) -> dict[str, Any]:
         cfg = (
             self.system
             .get("integration", {})
-            .get("camera_to_stage", {})
+            .get(
+                "gripper_depth_axis",
+                {},
+            )
         )
-        return bool(cfg.get("calibrated", False)) and self._extrinsic_configured()
+
+        mode = str(
+            cfg.get(
+                "mode",
+                "UNDECIDED",
+            )
+        ).strip().upper()
+
+        return {
+            "mode": mode,
+            "calibrated": bool(
+                cfg.get(
+                    "calibrated",
+                    False,
+                )
+            ),
+            "axis_in_carriage": cfg.get(
+                "axis_in_carriage",
+                "y",
+            ),
+            "motion_command_available": (
+                mode
+                not in {
+                    "",
+                    "UNDECIDED",
+                    "NONE",
+                }
+                and bool(
+                    cfg.get(
+                        "calibrated",
+                        False,
+                    )
+                )
+            ),
+        }
 
     def _ensure_camera_locked(self) -> bool:
         if self._camera is not None and self._camera.isOpened():
@@ -222,50 +509,30 @@ class ArucoVisionAdapter(VisionAdapter):
             self._last_error = None
             return frame
 
-    def _backend_tray_id(self, marker_id: int) -> int | None:
-        return self.tray_id_mapping.get(int(marker_id))
+    def get_correction_loop_config(self) -> dict[str, Any]:
+        integration = self.system.get("integration", {})
+        loop = integration.get("correction_loop", {})
+        alignment = integration.get("moving_camera_alignment", {})
 
-    @staticmethod
-    def _xyz_dict(values: np.ndarray) -> dict[str, float]:
-        x, y, z = np.asarray(values, dtype=float).reshape(3)
-        return {
-            "x": float(x),
-            "y": float(y),
-            "z": float(z),
-        }
+        tolerance = alignment.get("stage_alignment_tolerance_mm", {})
+        max_single = alignment.get("max_single_correction_mm", {})
 
-    def _physical_stage_axes(
-        self,
-        target_stage_xyz_mm: np.ndarray | None,
-    ) -> dict[str, Any] | None:
-        if target_stage_xyz_mm is None:
-            return None
-
-        target = np.asarray(
-            target_stage_xyz_mm,
-            dtype=float,
-        ).reshape(3)
-
-        axis1_name = str(
-            self.stage_axis_mapping.get("axis1", "x")
-        ).lower()
-        axis2_name = str(
-            self.stage_axis_mapping.get("axis2", "z")
-        ).lower()
-
-        if axis1_name not in _AXIS_INDEX or axis2_name not in _AXIS_INDEX:
-            raise ValueError(
-                "stage_axis_mapping은 x/y/z 중 하나를 사용해야 합니다."
-            )
+        def optional_float(value: Any) -> float | None:
+            if value is None:
+                return None
+            return float(value)
 
         return {
-            "axis1": {
-                "source_axis": axis1_name,
-                "target_mm": float(target[_AXIS_INDEX[axis1_name]]),
+            "enabled": bool(loop.get("enabled", False)),
+            "max_iterations": max(1, int(loop.get("max_iterations", 2))),
+            "reobserve_after_move": bool(loop.get("reobserve_after_move", True)),
+            "tolerance_mm": {
+                "x": optional_float(tolerance.get("x")),
+                "z": optional_float(tolerance.get("z")),
             },
-            "axis2": {
-                "source_axis": axis2_name,
-                "target_mm": float(target[_AXIS_INDEX[axis2_name]]),
+            "max_single_correction_mm": {
+                "x": optional_float(max_single.get("x")),
+                "z": optional_float(max_single.get("z")),
             },
         }
 
@@ -598,8 +865,16 @@ class ArucoVisionAdapter(VisionAdapter):
                 "detected": False,
                 "camera_connected": True,
                 "camera_calibrated": bool(self.vision.calibrated),
-                "camera_to_stage_configured": self._extrinsic_configured(),
-                "camera_to_stage_calibrated": self._extrinsic_calibrated(),
+                "camera_mount_mode": self.camera_mount_mode,
+                "moving_camera_alignment_configured":
+                    self._moving_alignment_configured(),
+                "moving_camera_alignment_calibrated":
+                    self._moving_alignment_calibrated(),
+                # Legacy aliases kept temporarily for existing UI compatibility.
+                "camera_to_stage_configured":
+                    self._moving_alignment_configured(),
+                "camera_to_stage_calibrated":
+                    self._moving_alignment_calibrated(),
                 "message": "ArUco 마커가 검출되지 않았습니다.",
             }
 
@@ -688,19 +963,28 @@ class ArucoVisionAdapter(VisionAdapter):
             "camera_profile": str(self.camera_profile),
             "aruco_id": marker_id,
             "tray_id": backend_tray_id,
-            "tray_label": (
-                f"TRAY {backend_tray_id:02d}"
-                if backend_tray_id is not None
-                else None
-            ),
+            "tray_label": tray.display_name or tray.tray_code,
             "tray_code": tray.tray_code,
+            "tray_display_name": tray.display_name or tray.tray_code,
+            "tray_geometry_calibrated": bool(
+                tray.geometry_calibrated
+            ),
             "center_px": {
                 "u": float(observation.center_u_px),
                 "v": float(observation.center_v_px),
             },
             "image_yaw_deg": float(observation.image_yaw_deg),
-            "camera_to_stage_configured": self._extrinsic_configured(),
-            "camera_to_stage_calibrated": self._extrinsic_calibrated(),
+            "camera_mount_mode": self.camera_mount_mode,
+            "moving_camera_alignment_configured":
+                self._moving_alignment_configured(),
+            "moving_camera_alignment_calibrated":
+                self._moving_alignment_calibrated(),
+            # Legacy aliases kept temporarily for existing UI compatibility.
+            "camera_to_stage_configured":
+                self._moving_alignment_configured(),
+            "camera_to_stage_calibrated":
+                self._moving_alignment_calibrated(),
+            "gripper_depth_axis": self._gripper_depth_status(),
         }
 
         if expected_tray_id is not None:
@@ -727,12 +1011,12 @@ class ArucoVisionAdapter(VisionAdapter):
             observation=observation,
             trays=self.trays,
             pose_limits=self.system["pose_limits"],
-            camera_to_stage_4x4=self._camera_to_stage_matrix(),
+            camera_to_stage_4x4=None,
         )
 
         pose = observation.pose6d
-        stage_axes = self._physical_stage_axes(
-            decision.target_stage_xyz_mm
+        alignment = self._compute_moving_alignment(
+            decision.target_camera.position_mm
         )
 
         base_result.update(
@@ -751,17 +1035,25 @@ class ArucoVisionAdapter(VisionAdapter):
                 ),
                 "pose_ok": bool(decision.pose_check.ok),
                 "pose_reasons": list(decision.pose_check.reasons),
-                "grip_target_stage_mm": (
-                    self._xyz_dict(decision.target_stage_xyz_mm)
-                    if decision.target_stage_xyz_mm is not None
-                    else None
-                ),
-                "physical_stage_axes": stage_axes,
+                "grip_target_stage_mm": None,
+                "target_carriage_mm":
+                    alignment["target_carriage_mm"],
+                "gripper_reference_carriage_mm":
+                    alignment["gripper_reference_carriage_mm"],
+                "alignment_error_carriage_mm":
+                    alignment["alignment_error_carriage_mm"],
+                "stage_correction_delta_mm":
+                    alignment["stage_correction_delta_mm"],
+                "depth_error_mm":
+                    alignment["depth_error_mm"],
+                "alignment_ok":
+                    alignment["alignment_ok"],
                 "ready_for_stage_correction": bool(
                     decision.pose_check.ok
                     and self.vision.calibrated
-                    and self._extrinsic_calibrated()
-                    and stage_axes is not None
+                    and tray.geometry_calibrated
+                    and self._moving_alignment_calibrated()
+                    and alignment["stage_correction_delta_mm"] is not None
                 ),
             }
         )
@@ -770,14 +1062,20 @@ class ArucoVisionAdapter(VisionAdapter):
             base_result["message"] = (
                 "ArUco/6DoF 계산은 성공했지만 자세 허용범위를 벗어났습니다."
             )
-        elif not self._extrinsic_calibrated():
+        elif not tray.geometry_calibrated:
             base_result["message"] = (
-                "Vision 계산은 정상입니다. Camera->Stage Extrinsic이 "
-                "미캘리브레이션 상태이므로 실제 Stage 보정은 차단됩니다."
+                "Vision 계산은 정상입니다. 해당 Tray의 marker_size / "
+                "marker_to_grip 실측이 확정되지 않아 X/Z 자동 보정은 차단됩니다."
+            )
+        elif not self._moving_alignment_calibrated():
+            base_result["message"] = (
+                "Vision 계산은 정상입니다. 이동부 Camera->Carriage "
+                "캘리브레이션이 없어 X/Z 자동 보정은 차단됩니다."
             )
         else:
             base_result["message"] = (
-                "Vision 계산 및 Camera->Stage 좌표변환이 정상입니다."
+                "이동부 카메라 기준 X/Z 보정량 계산이 준비되었습니다. "
+                "깊이 방향은 전후진 액추에이터 선정 전까지 모니터링만 합니다."
             )
 
         return base_result
@@ -897,12 +1195,21 @@ class ArucoVisionAdapter(VisionAdapter):
             "rms_reprojection_error": profile_cfg.get(
                 "rms_reprojection_error"
             ),
-            "camera_to_stage_configured": self._extrinsic_configured(),
-            "camera_to_stage_calibrated": self._extrinsic_calibrated(),
+            "camera_mount_mode": self.camera_mount_mode,
+            "moving_camera_alignment_configured":
+                self._moving_alignment_configured(),
+            "moving_camera_alignment_calibrated":
+                self._moving_alignment_calibrated(),
+            "gripper_depth_axis": self._gripper_depth_status(),
+            # Legacy aliases kept temporarily for existing UI compatibility.
+            "camera_to_stage_configured":
+                self._moving_alignment_configured(),
+            "camera_to_stage_calibrated":
+                self._moving_alignment_calibrated(),
             "ready_for_stage_correction": bool(
                 connected
                 and self.vision.calibrated
-                and self._extrinsic_calibrated()
+                and self._moving_alignment_calibrated()
             ),
             "last_error": self._last_error,
         }

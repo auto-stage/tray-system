@@ -1145,6 +1145,70 @@ class STM32StageAdapter(StageAdapter):
                     result["status"],
             }
 
+    def move_relative(
+        self,
+        x_delta_mm: float,
+        z_delta_mm: float,
+    ):
+        """
+        Vision이 계산한 X/Z 상대 보정량을 현재 Stage 위치에 더해 이동한다.
+        실제 STM32 프로토콜은 기존 MOVE 상대거리 명령을 그대로 사용한다.
+        """
+        with self._motion_lock:
+            status = self.refresh_status()
+
+            if not status.get("connected"):
+                return {
+                    "success": False,
+                    "message": "STM32 Serial 연결이 없습니다.",
+                    "status": status,
+                }
+
+            if status.get("estop"):
+                return {
+                    "success": False,
+                    "message": "ESTOP 상태입니다.",
+                    "status": status,
+                }
+
+            current_x = float(status["position"]["x"])
+            current_z = float(status["position"]["z"])
+            dx = float(x_delta_mm)
+            dz = float(z_delta_mm)
+
+            target_x = current_x + dx
+            target_z = current_z + dz
+
+            self.paused = False
+            self.state = "MOVING"
+            self.current_target = {
+                "type": "VISION_CORRECTION",
+                "x_mm": target_x,
+                "z_mm": target_z,
+                "x_delta_mm": dx,
+                "z_delta_mm": dz,
+            }
+
+            result = self._move_to_position(target_x, target_z)
+
+            if not result["success"]:
+                self.state = "ERROR"
+                return {
+                    **result,
+                    "delta_mm": {"x": dx, "z": dz},
+                }
+
+            self.state = "READY"
+            self.last_error = None
+
+            return {
+                "success": True,
+                "message": "Vision X/Z 상대 보정 이동 완료",
+                "delta_mm": {"x": dx, "z": dz},
+                "target_mm": {"x": target_x, "z": target_z},
+                "status": result["status"],
+            }
+
     # ========================================================
     # STOP / PAUSE / ESTOP
     # ========================================================
