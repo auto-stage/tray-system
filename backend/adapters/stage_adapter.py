@@ -12,6 +12,9 @@ class StageAdapter:
     def move_to_tray(self, tray_id: int):
         raise NotImplementedError
 
+    def move_to_handoff(self):
+        raise NotImplementedError
+
     def move_relative(self, x_delta_mm: float, z_delta_mm: float):
         """Vision correction: move X/Z by relative millimeter deltas."""
         raise NotImplementedError

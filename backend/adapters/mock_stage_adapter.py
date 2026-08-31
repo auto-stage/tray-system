@@ -1,5 +1,6 @@
 from .stage_adapter import StageAdapter
 from .slot_resolver import resolve_tray_target
+from .system_position_resolver import resolve_system_position
 
 
 class MockStageAdapter(StageAdapter):
@@ -128,6 +129,66 @@ class MockStageAdapter(StageAdapter):
             ),
             "status": self.get_status(),
         }
+
+    def move_to_handoff(self):
+        """
+        임시 컨베이어 Handoff 위치로 이동한다.
+        """
+
+        if self.estopped:
+            return {
+                "success": False,
+                "error": "ESTOP_ACTIVE",
+                "message": "E-STOP 상태에서는 이동할 수 없습니다.",
+                "status": self.get_status(),
+            }
+
+        if not self.homed:
+            return {
+                "success": False,
+                "error": "NOT_HOMED",
+                "message": "Stage HOME을 먼저 수행해야 합니다.",
+                "status": self.get_status(),
+            }
+
+        target = resolve_system_position(
+            "CONVEYOR_HANDOFF"
+        )
+
+        if not target.get("success"):
+            self.last_error = target
+
+            return {
+                **target,
+                "status": self.get_status(),
+            }
+
+        self.moving = True
+        self.current_target = target
+
+        self.x = target["x_mm"]
+        self.z = target["z_mm"]
+
+        self.current_tray = None
+        self.moving = False
+        self.last_error = None
+
+        print(
+            "[MOCK STAGE]",
+            "CONVEYOR_HANDOFF",
+            f"X={self.x:.4f} mm",
+            f"Z={self.z:.4f} mm",
+        )
+
+        return {
+            "success": True,
+            "message": (
+                "CONVEYOR_HANDOFF 이동 완료 (MOCK)"
+            ),
+            "target": target,
+            "status": self.get_status(),
+        }
+
 
     def move_relative(
         self,

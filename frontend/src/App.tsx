@@ -1892,8 +1892,8 @@ function PickingScreen({
   onAutoVerify: () => void; onManualVerify: () => void
   onPause: () => void; onStop: () => void
 }) {
-  // count goes up slowly — simulates camera detecting as worker drops parts in tray
-  // interval is longer to feel realistic, not a fake timer
+  // Hardware-free development simulator. The real system will replace this
+  // visual count with load-cell feedback after the sensor is installed.
   const [count, setCount] = useState(0)
   const [stable, setStable] = useState(false)
   const [stableCountdown, setStableCountdown] = useState(3)
@@ -1904,7 +1904,7 @@ function PickingScreen({
   useEffect(() => { pausedRef.current = isPaused }, [isPaused])
   useEffect(() => { stopRef.current = showStop }, [showStop])
 
-  // Simulate YOLO detection: a new part is "detected" every ~1.8s (realistic picking pace)
+  // Mock picking progress until the real load-cell feedback is connected.
   useEffect(() => {
     if (count >= item.qty) return
     const t = setTimeout(() => {
@@ -1992,9 +1992,9 @@ function PickingScreen({
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', background: '#0a0f1a' }}>
           <div style={{ background: '#0f1929', borderBottom: '1px solid #1e3a5f', padding: '6px 14px', display: 'flex', alignItems: 'center', gap: 10 }}>
             <span className="status-dot blink" style={{ background: '#ef4444' }} />
-            <span style={{ color: '#94a3b8', fontSize: 11, fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>CAM-02  YOLO DETECTION  LIVE</span>
+            <span style={{ color: '#94a3b8', fontSize: 11, fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>PICKING MONITOR  MOCK</span>
             <div style={{ flex: 1 }} />
-            <span style={{ color: '#4ade80', fontSize: 10, fontFamily: 'JetBrains Mono, monospace' }}>MODEL: yolov8n-parts  FPS: 28</span>
+            <span style={{ color: '#4ade80', fontSize: 10, fontFamily: 'JetBrains Mono, monospace' }}>LOAD CELL + PART VISION: HARDWARE PENDING</span>
           </div>
 
           {/* Camera area */}
@@ -2073,7 +2073,7 @@ function PickingScreen({
             }}>
               {/* Live count */}
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-                <span style={{ color: '#64748b', fontSize: 11, fontFamily: 'JetBrains Mono, monospace' }}>DETECTED</span>
+                <span style={{ color: '#64748b', fontSize: 11, fontFamily: 'JetBrains Mono, monospace' }}>MOCK COUNT</span>
                 <span style={{
                   fontFamily: 'JetBrains Mono, monospace', fontWeight: 900,
                   fontSize: 42, lineHeight: 1,
@@ -2129,7 +2129,7 @@ function PickingScreen({
 }
 
 // ============================================================
-// SCREEN: VERIFICATION (카메라 수량 확인 — 품목별, 빠른 자동 전환)
+// SCREEN: VERIFICATION (Load Cell 수량 + Camera 부품 검수)
 // ============================================================
 function VerificationScreen({
   item, itemIndex, totalItems, isPaused, showStop, mode,
@@ -2148,6 +2148,7 @@ function VerificationScreen({
   const [detectedQuantity, setDetectedQuantity] =
     useState<number | null>(null)
   const [visionError, setVisionError] = useState('')
+  const [inspectionResult, setInspectionResult] = useState<any>(null)
   const visionPromiseRef = useRef<{
     key: string
     promise: Promise<any>
@@ -2165,6 +2166,7 @@ function VerificationScreen({
     const runVisionCheck = async () => {
       setCountdown(2)
       setVisionError('')
+      setInspectionResult(null)
 
       if (mode === 'MANUAL') {
         setConfirmed(false)
@@ -2213,22 +2215,27 @@ function VerificationScreen({
         return
       }
 
+      setInspectionResult(result)
+
       const detected =
         Number(
-          result.detected_quantity ?? 0
+          result?.loadcell?.estimated_quantity
+          ?? result.detected_quantity
+          ?? 0
         )
 
       setDetectedQuantity(detected)
 
       if (
         result.success &&
-        result.matched
+        (result.passed ?? result.matched)
       ) {
         setConfirmed(true)
       } else {
         setConfirmed(false)
         setVisionError(
-          `수량 불일치 — 검출 ${detected} / 요청 ${item.qty}`
+          result.message
+          || `검수 NG — 수량 ${detected} / 요청 ${item.qty}`
         )
       }
     }
@@ -2267,7 +2274,7 @@ function VerificationScreen({
         background: 'var(--hmi-navy)', color: 'white', padding: '8px 16px',
         display: 'flex', alignItems: 'center', gap: 12, borderBottom: '2px solid var(--hmi-blue-light)', flexShrink: 0
       }}>
-        <span style={{ fontWeight: 900, fontSize: 16, letterSpacing: '0.1em' }}>카메라 수량 확인</span>
+        <span style={{ fontWeight: 900, fontSize: 16, letterSpacing: '0.1em' }}>부품 / 수량 교차 검수</span>
         <div style={{ flex: 1 }} />
         <span style={{ fontSize: 12, color: '#93c5fd', fontFamily: 'JetBrains Mono, monospace' }}>품목 {itemIndex + 1} / {totalItems}</span>
       </div>
@@ -2278,7 +2285,7 @@ function VerificationScreen({
           {/* Camera view */}
           <div style={{ flex: '0 0 380px' }}>
             <div style={{ background: '#1e3a5f', color: 'white', padding: '6px 14px', fontSize: 11, fontWeight: 700, letterSpacing: '0.05em', display: 'flex', alignItems: 'center', gap: 8 }}>
-              CAM-02  CAMERA INSPECTION
+              FIXED CAMERA  PART INSPECTION
               <span className="status-dot blink" style={{ background: '#ef4444', marginLeft: 4 }} />
               <span style={{ fontSize: 10, fontFamily: 'JetBrains Mono, monospace' }}>LIVE</span>
             </div>
@@ -2298,7 +2305,7 @@ function VerificationScreen({
               </div>
               {mode === 'AUTO' && confirmed && (
                 <div style={{ position: 'absolute', top: 8, left: 8, background: '#16a34a', color: 'white', fontSize: 10, padding: '2px 8px', fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>
-                  ✓ COUNT CONFIRMED
+                  ✓ INSPECTION PASS
                 </div>
               )}
               {mode === 'AUTO' && !confirmed && (
@@ -2312,13 +2319,31 @@ function VerificationScreen({
           {/* Result panel */}
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 12 }}>
             <div style={{ background: 'white', border: '1px solid var(--hmi-border)', padding: '14px 18px' }}>
-              <div style={{ fontSize: 11, color: 'var(--hmi-text-muted)', marginBottom: 12, letterSpacing: '0.05em', fontWeight: 700 }}>YOLO 검출 결과</div>
+              <div style={{ fontSize: 11, color: 'var(--hmi-text-muted)', marginBottom: 12, letterSpacing: '0.05em', fontWeight: 700 }}>하이브리드 검수 결과</div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                 {[
                   { label: '품목', val: item.name },
                   { label: '규격', val: item.spec },
+                  {
+                    label: 'Vision 부품',
+                    val: inspectionResult?.vision?.detected_part_no ?? '-',
+                  },
+                  {
+                    label: 'Vision 상태',
+                    val: inspectionResult?.vision?.visual_ok === true ? 'PASS' : '-',
+                  },
                   { label: '요청 수량', val: `${item.qty} EA` },
-                  { label: '검출 수량', val: `${detectedQuantity ?? '-'} EA` },
+                  { label: 'Load Cell 수량', val: `${detectedQuantity ?? '-'} EA` },
+                  {
+                    label: '측정 중량',
+                    val: inspectionResult?.loadcell?.weight_g != null
+                      ? `${Number(inspectionResult.loadcell.weight_g).toFixed(1)} g`
+                      : '-',
+                  },
+                  {
+                    label: '센서 모드',
+                    val: inspectionResult?.mock ? 'MOCK' : 'REAL',
+                  },
                 ].map(r => (
                   <div key={r.label} style={{ background: '#f8f9fa', border: '1px solid var(--hmi-border-light)', padding: '8px 10px' }}>
                     <div style={{ fontSize: 11, color: 'var(--hmi-text-muted)' }}>{r.label}</div>
@@ -2368,18 +2393,18 @@ function VerificationScreen({
               ) : !confirmed ? (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: 'var(--hmi-blue)' }}>
                   <div className="spin" style={{ width: 18, height: 18, border: '2px solid var(--hmi-blue)', borderTopColor: 'transparent', flexShrink: 0 }} />
-                  <span style={{ fontWeight: 700 }}>카메라 수량 확인 중...</span>
+                  <span style={{ fontWeight: 700 }}>부품 종류와 중량 기반 수량을 교차 검수 중...</span>
                 </div>
               ) : (
                 <>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
                     <span style={{ fontSize: 20, color: 'var(--hmi-green)' }}>✓</span>
                     <div>
-                      <div style={{ fontWeight: 700, fontSize: 15, color: 'var(--hmi-green)' }}>수량 확인 완료 — MATCH</div>
+                      <div style={{ fontWeight: 700, fontSize: 15, color: 'var(--hmi-green)' }}>통합 검수 완료 — PASS</div>
                       <div style={{ fontSize: 12, color: 'var(--hmi-text-muted)' }}>
                         {itemIndex + 1 < totalItems
                           ? `다음 품목 (${itemIndex + 2}/${totalItems})으로 이동합니다...`
-                          : '모든 품목 피킹 완료 — 최종 무게 검증으로 이동합니다...'}
+                          : '모든 품목 검수 완료 — 최종 확인으로 이동합니다...'}
                       </div>
                     </div>
                     {!isPaused && !showStop && (
@@ -2459,7 +2484,7 @@ function FinalVerificationScreen({
         background: 'var(--hmi-navy)', color: 'white', padding: '8px 16px',
         display: 'flex', alignItems: 'center', gap: 12, borderBottom: '2px solid var(--hmi-blue-light)', flexShrink: 0
       }}>
-        <span style={{ fontWeight: 900, fontSize: 16, letterSpacing: '0.1em' }}>FINAL WEIGHT VERIFICATION</span>
+        <span style={{ fontWeight: 900, fontSize: 16, letterSpacing: '0.1em' }}>FINAL WEIGHT VERIFICATION <span style={{ fontSize: 10, color: '#fcd34d' }}>MOCK</span></span>
         <div style={{ flex: 1 }} />
         <span style={{ fontSize: 12, color: '#93c5fd', fontFamily: 'JetBrains Mono, monospace' }}>전체 {items.length}개 품목 합산 검증</span>
       </div>
@@ -2618,12 +2643,16 @@ function TrayReturnScreen({
 
   const initEntries: TrayReturnEntry[] = uniqueUsedItems.map((item, i) => ({
     tray: item,
-    arucoId: String(i + 1).padStart(2, '0'),
+    arucoId: String(
+      Number(
+        item.tray.match(/\d+/)?.[0]
+        ?? i + 1
+      )
+    ).padStart(2, '0'),
     fromSlot: slotOf(item.tray, currentSlots),
     toSlot: slotOf(item.tray, targetSlots),
     phase: 'waiting',
   }))
-
   const [entries, setEntries] = useState<TrayReturnEntry[]>(initEntries)
   const [currentIdx, setCurrentIdx] = useState(0)
   const pausedRef = useRef(isPaused)
@@ -2635,180 +2664,224 @@ function TrayReturnScreen({
     setEntries(prev => prev.map((e, i) => i === idx ? { ...e, phase } : e))
   }
 
-  // Tray 복귀:
-  // waiting은 작업자가 Tray를 올려놓는 시간을 표현하는 Mock 대기.
-  // ArUco 확인 자체는 실제 /vision/aruco API 결과로 판정한다.
-  // 실제 장비에서는 waiting도 센서/버튼 신호로 교체 가능하다.
+  // Tray 회수/복귀 실제 상태 표시.
+  //
+  // 실제 Stage 이동은 Material Flow가 독립적으로 수행하고,
+  // 이 화면은 Backend 상태를 조회해서 진행상황만 보여준다.
+  const completedRef =
+    useRef(false)
+
   useEffect(() => {
-    if (isPaused || showStop) return
-
-    const idx = currentIdx
-
-    if (idx >= entries.length) {
+    if (
+      isPaused ||
+      showStop
+    ) {
       return
     }
 
     let cancelled = false
-    let timer:
-      ReturnType<typeof setTimeout> | undefined
 
-    const execute = async () => {
-      setPhase(idx, 'waiting')
+    const syncReturnStatus =
+      async () => {
+        try {
+          const response =
+            await fetch(
+              'http://127.0.0.1:8000/material-flow/status'
+            )
 
-      // 현재는 Mock 데모상 Tray를 올려놓을 시간을 짧게 둔다.
-      await new Promise<void>(
-        resolve => {
-          timer = setTimeout(
-            resolve,
-            1200
+          const result =
+            await response.json()
+
+          if (
+            cancelled ||
+            !response.ok ||
+            !result.success
+          ) {
+            return
+          }
+
+          const status =
+            result.data
+
+          const returnedTrays =
+            Array.isArray(
+              status?.returned_trays
+            )
+              ? status.returned_trays.map(Number)
+              : []
+
+          const returnQueue =
+            Array.isArray(
+              status?.return_queue
+            )
+              ? status.return_queue.map(Number)
+              : []
+
+          const currentReturnTray =
+            Number(
+              status?.current_return_tray
+              ?? -1
+            )
+
+          const returnState =
+            String(
+              status?.return_state
+              ?? ''
+            )
+
+          setEntries(
+            previous =>
+              previous.map(
+                entry => {
+                  const trayId =
+                    Number(
+                      entry.tray.tray
+                        .match(/\d+/)?.[0]
+                      ?? -1
+                    )
+
+                  let phase:
+                    ReturnPhase =
+                      'waiting'
+
+                  if (
+                    returnedTrays.includes(
+                      trayId
+                    )
+                  ) {
+                    phase = 'placed'
+
+                  } else if (
+                    trayId
+                    === currentReturnTray
+                  ) {
+                    if (
+                      returnState
+                      === 'RETURN_PICKING'
+                    ) {
+                      phase = 'recognized'
+
+                    } else if (
+                      [
+                        'RETURNING_TO_SLOT',
+                        'RETURN_INSERTING',
+                        'RETURN_TO_HANDOFF',
+                      ].includes(
+                        returnState
+                      )
+                    ) {
+                      phase = 'relocating'
+
+                    } else {
+                      phase = 'detecting'
+                    }
+
+                  } else if (
+                    returnQueue.includes(
+                      trayId
+                    )
+                  ) {
+                    phase = 'waiting'
+                  }
+
+                  return {
+                    ...entry,
+                    phase,
+                  }
+                }
+              )
+          )
+
+          // 화면에서 현재 진행 Tray도
+          // 실제 ArUco/MaterialFlow 결과 기준으로 표시.
+          let activeIndex = -1
+
+          if (
+            Number.isInteger(
+              currentReturnTray
+            )
+            &&
+            currentReturnTray > 0
+          ) {
+            activeIndex =
+              uniqueUsedItems.findIndex(
+                item =>
+                  Number(
+                    item.tray
+                      .match(/\d+/)?.[0]
+                    ?? -1
+                  )
+                  === currentReturnTray
+              )
+          }
+
+          if (activeIndex < 0) {
+            activeIndex =
+              uniqueUsedItems.findIndex(
+                item =>
+                  !returnedTrays.includes(
+                    Number(
+                      item.tray
+                        .match(/\d+/)?.[0]
+                      ?? -1
+                    )
+                  )
+              )
+          }
+
+          if (activeIndex >= 0) {
+            setCurrentIdx(
+              activeIndex
+            )
+          }
+
+          if (
+            status?.all_returned
+            === true
+            &&
+            !completedRef.current
+          ) {
+            completedRef.current = true
+
+            onComplete(
+              targetSlots
+            )
+          }
+
+        } catch (error) {
+          console.error(
+            '[MATERIAL] 회수 상태 조회 실패:',
+            error
           )
         }
+      }
+
+    syncReturnStatus()
+
+    const timer =
+      setInterval(
+        syncReturnStatus,
+        500
       )
-
-      if (
-        cancelled ||
-        pausedRef.current ||
-        stopRef.current
-      ) {
-        return
-      }
-
-      setPhase(idx, 'detecting')
-
-      const visionResult =
-        await onArucoCheck()
-
-      if (
-        cancelled ||
-        pausedRef.current ||
-        stopRef.current
-      ) {
-        return
-      }
-
-      const expectedTrayId =
-        Number(
-          entries[idx].tray.tray
-            .match(/\d+/)?.[0]
-        )
-
-      const detectedTrayId =
-        Number(
-          visionResult.tray_id ??
-          visionResult.aruco_id
-        )
-
-      // MockVisionAdapter는 현재 고정 ID를 돌려주므로
-      // mock=true일 때는 연결 통로 테스트로 간주해 현재 대상 Tray를 승인.
-      // 실제 VisionAdapter(mock=false)에서는 반드시 ID가 일치해야 통과.
-      const matched =
-        visionResult.success &&
-        visionResult.detected &&
-        (
-          visionResult.mock === true ||
-          detectedTrayId === expectedTrayId
-        )
-
-      if (!matched) {
-        setPhase(idx, 'waiting')
-
-        alert(
-          `ArUco 확인 실패\n\n` +
-          `기대 Tray: ${entries[idx].tray.tray}\n` +
-          `인식 ID: ${
-            Number.isFinite(detectedTrayId)
-              ? detectedTrayId
-              : '인식 실패'
-          }`
-        )
-
-        return
-      }
-
-      setPhase(idx, 'recognized')
-
-      await new Promise<void>(
-        resolve => {
-          timer = setTimeout(
-            resolve,
-            500
-          )
-        }
-      )
-
-      if (
-        cancelled ||
-        pausedRef.current ||
-        stopRef.current
-      ) {
-        return
-      }
-
-      // 재배치 이동 자체는 아직 Stage/Q-learning 실제 명령 전이므로
-      // UI Mock 진행을 유지한다.
-      setPhase(idx, 'relocating')
-
-      await new Promise<void>(
-        resolve => {
-          timer = setTimeout(
-            resolve,
-            1200
-          )
-        }
-      )
-
-      if (
-        cancelled ||
-        pausedRef.current ||
-        stopRef.current
-      ) {
-        return
-      }
-
-      setPhase(idx, 'placed')
-
-      await new Promise<void>(
-        resolve => {
-          timer = setTimeout(
-            resolve,
-            400
-          )
-        }
-      )
-
-      if (cancelled) {
-        return
-      }
-
-      if (idx + 1 < entries.length) {
-        setCurrentIdx(idx + 1)
-      } else {
-        onComplete(targetSlots)
-      }
-    }
-
-    execute()
 
     return () => {
       cancelled = true
-
-      if (timer) {
-        clearTimeout(timer)
-      }
+      clearInterval(timer)
     }
+
   }, [
-    currentIdx,
     isPaused,
     showStop
   ]) // eslint-disable-line
 
+
   const cur = entries[currentIdx]
 
   const phaseLabel: Record<ReturnPhase, string> = {
-    waiting: '다음 Tray를 그리퍼에 올려주세요',
+    waiting: '반환 Tray Handoff 도착 대기',
     detecting: 'ArUco Marker 감지 중...',
     recognized: `TRAY 인식 완료 — ${cur?.tray.tray}`,
-    relocating: `${cur?.tray.tray} 재배치 중`,
+    relocating: `${cur?.tray.tray} 선반 복귀 중`,
     placed: `${cur?.tray.tray} 배치 완료`,
   }
   const phaseColor: Record<ReturnPhase, string> = {
@@ -5484,6 +5557,64 @@ export default function App() {
     }
   }
 
+  const requestStageHandoff = async (): Promise<{
+    success: boolean
+    message: string
+  }> => {
+    try {
+      const response = await fetch(
+        'http://127.0.0.1:8000/stage/move-to-handoff',
+        {
+          method: 'POST',
+        }
+      )
+
+      if (!response.ok) {
+        throw new Error(
+          `Stage Handoff 서버 오류: ${response.status}`
+        )
+      }
+
+      const result = await response.json()
+
+      if (!result.success) {
+        return {
+          success: false,
+          message:
+            result.message ||
+            result.error ||
+            'Handoff 이동 실패',
+        }
+      }
+
+      console.log(
+        '[STAGE] Handoff 이동 완료:',
+        result
+      )
+
+      return {
+        success: true,
+        message:
+          result.message ||
+          'Handoff 이동 완료',
+      }
+
+    } catch (error) {
+      console.error(
+        '[STAGE] Handoff 이동 요청 실패:',
+        error
+      )
+
+      return {
+        success: false,
+        message:
+          error instanceof Error
+            ? error.message
+            : 'Handoff 이동 요청 실패',
+      }
+    }
+  }
+
   const requestStagePause = async (): Promise<boolean> => {
     try {
       const response = await fetch(
@@ -5963,10 +6094,10 @@ export default function App() {
 
 
   // ============================================================
-  // Vision API 연결
+  // 부품 검수 API 연결
   //
-  // 지금: MockVisionAdapter
-  // 나중: 실제 YOLO / ArUco 구현체
+  // 현재: Mock Load Cell + Mock Part Vision
+  // 향후: 실제 Load Cell + OpenCV/YOLO Part Inspection Adapter
   // ============================================================
 
   const requestVisionCount = async (
@@ -5974,7 +6105,7 @@ export default function App() {
   ) => {
     try {
       const response = await fetch(
-        'http://127.0.0.1:8000/vision/count',
+        'http://127.0.0.1:8000/inspection/run',
         {
           method: 'POST',
           headers: {
@@ -5989,14 +6120,14 @@ export default function App() {
 
       if (!response.ok) {
         throw new Error(
-          `Vision count 서버 오류: ${response.status}`
+          `Inspection 서버 오류: ${response.status}`
         )
       }
 
       const result = await response.json()
 
       console.log(
-        '[VISION] 수량 확인:',
+        '[INSPECTION] 통합 검수:',
         result
       )
 
@@ -6004,7 +6135,7 @@ export default function App() {
 
     } catch (error) {
       console.error(
-        '[VISION] 수량 확인 실패:',
+        '[INSPECTION] 통합 검수 실패:',
         error
       )
 
@@ -6051,6 +6182,514 @@ export default function App() {
         tray_id: null,
         aruco_id: null,
       }
+    }
+  }
+
+
+  // ============================================================
+  // Material Flow API
+  //
+  // Stage의 Tray 공급 / Handoff / 회수 흐름은
+  // 작업자 Picking Workflow와 독립적으로 관리한다.
+  // ============================================================
+  const trayNumber = (
+    trayLabel: string
+  ) => {
+    return Number(
+      trayLabel.match(/\d+/)?.[0] ?? -1
+    )
+  }
+
+  const requestMaterialFlowStart = async () => {
+    try {
+      const response = await fetch(
+        'http://127.0.0.1:8000/material-flow/start',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type':
+              'application/json',
+          },
+          body: JSON.stringify({
+            items: workItems.map(item => ({
+              part_no: item.partNo,
+              name: item.name,
+              spec: item.spec,
+              tray: item.tray,
+              quantity: item.qty,
+            })),
+          }),
+        }
+      )
+
+      const result = await response.json()
+
+      if (
+        !response.ok ||
+        !result.success
+      ) {
+        throw new Error(
+          result.message ||
+          'Material Flow 시작 실패'
+        )
+      }
+
+      console.log(
+        '[MATERIAL] 시작:',
+        result.data
+      )
+
+      return result.data
+
+    } catch (error) {
+      console.error(
+        '[MATERIAL] 시작 실패:',
+        error
+      )
+
+      return null
+    }
+  }
+
+  const requestMaterialFlowStatus = async () => {
+    try {
+      const response = await fetch(
+        'http://127.0.0.1:8000/material-flow/status'
+      )
+
+      const result = await response.json()
+
+      if (
+        !response.ok ||
+        !result.success
+      ) {
+        return null
+      }
+
+      return result.data
+
+    } catch (error) {
+      console.error(
+        '[MATERIAL] 상태 조회 실패:',
+        error
+      )
+
+      return null
+    }
+  }
+
+  const postMaterialFlow = async (
+    path: string
+  ) => {
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:8000${path}`,
+        {
+          method: 'POST',
+        }
+      )
+
+      const result = await response.json()
+
+      if (
+        !response.ok ||
+        !result.success
+      ) {
+        throw new Error(
+          result.message ||
+          `Material Flow 요청 실패: ${path}`
+        )
+      }
+
+      console.log(
+        `[MATERIAL] ${path}:`,
+        result.data
+      )
+
+      return result.data
+
+    } catch (error) {
+      console.error(
+        `[MATERIAL] ${path} 실패:`,
+        error
+      )
+
+      return null
+    }
+  }
+
+  const requestMaterialReturnReady = async (
+    trayId: number
+  ) => {
+    return postMaterialFlow(
+      `/material-flow/return-ready/${trayId}`
+    )
+  }
+
+  const waitForTraySupplied = async (
+    trayId: number,
+    timeoutMs = 300000
+  ) => {
+    const startedAt = Date.now()
+
+    while (
+      Date.now() - startedAt
+      < timeoutMs
+    ) {
+      const status =
+        await requestMaterialFlowStatus()
+
+      if (
+        Array.isArray(
+          status?.supplied_trays
+        ) &&
+        status.supplied_trays.includes(
+          trayId
+        )
+      ) {
+        return true
+      }
+
+      await new Promise<void>(
+        resolve =>
+          setTimeout(
+            resolve,
+            250
+          )
+      )
+    }
+
+    return false
+  }
+
+  const runSupplySequence = async () => {
+    while (true) {
+      const status =
+        await requestMaterialFlowStatus()
+
+      if (!status) {
+        throw new Error(
+          'Material Flow 상태를 확인할 수 없습니다.'
+        )
+      }
+
+      if (
+        status.supply_complete === true
+      ) {
+        console.log(
+          '[MATERIAL] 모든 Tray 공급 완료. RETURN_WAIT'
+        )
+
+        // 공급이 끝난 Stage는 Handoff에 머물면서
+        // 작업자가 반환한 Tray를 독립적으로 회수한다.
+        void runReturnSequence().catch(
+          error => {
+            console.error(
+              '[MATERIAL] 자동 회수 실패:',
+              error
+            )
+
+            alert(
+              'Tray 자동 회수 중 오류가 발생했습니다.\n\n'
+              + (
+                error instanceof Error
+                  ? error.message
+                  : String(error)
+              )
+            )
+          }
+        )
+
+        return
+      }
+
+      const trayId =
+        Number(
+          status.current_supply_tray
+        )
+
+      if (
+        !Number.isInteger(trayId) ||
+        trayId < 1
+      ) {
+        throw new Error(
+          '현재 공급 Tray ID가 올바르지 않습니다.'
+        )
+      }
+
+      const trayLabel =
+        `TRAY ${String(trayId).padStart(2, '0')}`
+
+      console.log(
+        '[MATERIAL] 공급 시작:',
+        trayLabel
+      )
+
+      // 1. 실제 Stage -> Tray 위치
+      const moveResult =
+        await requestStageMove(
+          trayLabel
+        )
+
+      if (!moveResult.success) {
+        throw new Error(
+          moveResult.message
+        )
+      }
+
+      // 2. Tray 위치 도착
+      if (
+        !await postMaterialFlow(
+          '/material-flow/supply/tray-arrived'
+        )
+      ) {
+        throw new Error(
+          'Tray 도착 상태 전환 실패'
+        )
+      }
+
+      // 3. ArUco 미세 정렬
+      // 현재 장비 미연동 구간은 상태 전환으로 검증한다.
+      if (
+        !await postMaterialFlow(
+          '/material-flow/supply/alignment-complete'
+        )
+      ) {
+        throw new Error(
+          'ArUco 정렬 상태 전환 실패'
+        )
+      }
+
+      // 4. Gripper 인출 + 캐리지 Load Cell 확인
+      if (
+        !await postMaterialFlow(
+          '/material-flow/supply/extraction-complete'
+        )
+      ) {
+        throw new Error(
+          'Tray 인출 상태 전환 실패'
+        )
+      }
+
+      // 5. 실제 Stage -> Conveyor Handoff
+      const handoffResult =
+        await requestStageHandoff()
+
+      if (!handoffResult.success) {
+        throw new Error(
+          handoffResult.message
+        )
+      }
+
+      // 6. Conveyor 전달 완료
+      const handoffState =
+        await postMaterialFlow(
+          '/material-flow/supply/handoff-complete'
+        )
+
+      if (!handoffState) {
+        throw new Error(
+          'Handoff 완료 상태 전환 실패'
+        )
+      }
+
+      console.log(
+        '[MATERIAL] 공급 완료:',
+        trayLabel
+      )
+    }
+  }
+
+  const runReturnSequence = async () => {
+    console.log(
+      '[MATERIAL] Return Loop 시작'
+    )
+
+    while (true) {
+      const status =
+        await requestMaterialFlowStatus()
+
+      if (!status) {
+        throw new Error(
+          'Material Flow 반환 상태를 확인할 수 없습니다.'
+        )
+      }
+
+      if (
+        status.all_returned === true
+      ) {
+        console.log(
+          '[MATERIAL] 모든 Tray 회수 완료'
+        )
+        return
+      }
+
+      if (
+        status.supply_complete !== true
+      ) {
+        await new Promise<void>(
+          resolve =>
+            setTimeout(
+              resolve,
+              500
+            )
+        )
+        continue
+      }
+
+      const returnQueue =
+        Array.isArray(
+          status.return_queue
+        )
+          ? status.return_queue.map(Number)
+          : []
+
+      if (
+        returnQueue.length === 0
+      ) {
+        await new Promise<void>(
+          resolve =>
+            setTimeout(
+              resolve,
+              500
+            )
+        )
+        continue
+      }
+
+      // Handoff에 도착한 반환 Tray 자동 식별.
+      const visionResult =
+        await requestVisionAruco()
+
+      let detectedTrayId = -1
+
+      if (
+        visionResult?.mock === true
+      ) {
+        detectedTrayId =
+          Number(
+            returnQueue[0]
+          )
+
+      } else if (
+        visionResult?.success === true
+        &&
+        visionResult?.detected === true
+      ) {
+        detectedTrayId =
+          Number(
+            visionResult.tray_id
+            ??
+            visionResult.aruco_id
+          )
+      }
+
+      if (
+        !Number.isInteger(
+          detectedTrayId
+        )
+        ||
+        !returnQueue.includes(
+          detectedTrayId
+        )
+      ) {
+        await new Promise<void>(
+          resolve =>
+            setTimeout(
+              resolve,
+              500
+            )
+        )
+        continue
+      }
+
+      console.log(
+        '[MATERIAL] 반환 Tray 자동 인식:',
+        `TRAY ${String(detectedTrayId).padStart(2, '0')}`
+      )
+
+      const identified =
+        await postMaterialFlow(
+          `/material-flow/return/identified/${detectedTrayId}`
+        )
+
+      if (!identified) {
+        throw new Error(
+          '반환 Tray ID 반영 실패'
+        )
+      }
+
+      const pickState =
+        await postMaterialFlow(
+          '/material-flow/return/pick-complete'
+        )
+
+      if (!pickState) {
+        throw new Error(
+          '반환 Tray 파지 상태 전환 실패'
+        )
+      }
+
+      const trayLabel =
+        `TRAY ${String(detectedTrayId).padStart(2, '0')}`
+
+      const moveResult =
+        await requestStageMove(
+          trayLabel
+        )
+
+      if (!moveResult.success) {
+        throw new Error(
+          moveResult.message
+        )
+      }
+
+      const slotState =
+        await postMaterialFlow(
+          '/material-flow/return/slot-arrived'
+        )
+
+      if (!slotState) {
+        throw new Error(
+          '반환 Slot 도착 상태 전환 실패'
+        )
+      }
+
+      const insertState =
+        await postMaterialFlow(
+          '/material-flow/return/insert-complete'
+        )
+
+      if (!insertState) {
+        throw new Error(
+          'Tray 삽입 상태 전환 실패'
+        )
+      }
+
+      const handoffResult =
+        await requestStageHandoff()
+
+      if (!handoffResult.success) {
+        throw new Error(
+          handoffResult.message
+        )
+      }
+
+      const handoffState =
+        await postMaterialFlow(
+          '/material-flow/return/handoff-arrived'
+        )
+
+      if (!handoffState) {
+        throw new Error(
+          'Handoff 복귀 상태 전환 실패'
+        )
+      }
+
+      console.log(
+        '[MATERIAL] Tray 회수 완료:',
+        trayLabel
+      )
     }
   }
 
@@ -6740,9 +7379,62 @@ export default function App() {
       return
     }
 
-    await goToTrayMoving(
+    const materialState =
+      await requestMaterialFlowStart()
+
+    if (!materialState) {
+      alert(
+        'Stage 공급 흐름 시작에 실패했습니다.'
+      )
+      return
+    }
+
+    setCurrentItemIndex(
       firstIndex
     )
+
+    nav('TRAY_MOVING')
+
+    // Stage 공급은 작업자 Workflow와 독립적으로
+    // 백그라운드에서 계속 진행한다.
+    void runSupplySequence().catch(
+      error => {
+        console.error(
+          '[MATERIAL] 자동 공급 실패:',
+          error
+        )
+
+        alert(
+          'Tray 자동 공급 중 오류가 발생했습니다.\n\n'
+          + (
+            error instanceof Error
+              ? error.message
+              : String(error)
+          )
+        )
+      }
+    )
+
+    const firstTrayId =
+      trayNumber(
+        workItems[firstIndex].tray
+      )
+
+    // 작업자는 해당 Tray가 선반 위치에 도착했을 때가 아니라
+    // Conveyor Handoff까지 전달된 뒤 작업을 시작한다.
+    const supplied =
+      await waitForTraySupplied(
+        firstTrayId
+      )
+
+    if (!supplied) {
+      alert(
+        '첫 번째 Tray 공급 완료를 확인하지 못했습니다.'
+      )
+      return
+    }
+
+    await handleTrayArrived()
   }
   const handleTrayArrived = async () => {
     const workflowState =
@@ -6836,9 +7528,40 @@ export default function App() {
       return
     }
 
+    // 동일 Tray를 사용하는 뒤쪽 품목이 더 없다면
+    // 해당 Tray는 이제 반환 가능하다.
+    const completedTrayId =
+      trayNumber(
+        currentItem.tray
+      )
+
+    const hasLaterSameTray =
+      workItems
+        .slice(
+          currentItemIndex + 1
+        )
+        .some(
+          item =>
+            trayNumber(item.tray)
+            === completedTrayId
+        )
+
+    if (!hasLaterSameTray) {
+      const returnReady =
+        await requestMaterialReturnReady(
+          completedTrayId
+        )
+
+      if (!returnReady) {
+        alert(
+          `${currentItem.tray} 반환 대기 등록에 실패했습니다.`
+        )
+        return
+      }
+    }
+
     // 마지막 품목이더라도 ITEM_COMPLETE를 먼저 보여준다.
-    // 그 다음 버튼에서 /workflow/next-item을 호출하면
-    // Python이 FINAL_VERIFICATION 또는 다음 TRAY_MOVING을 결정한다.
+    // Worker Workflow와 Stage 공급 Workflow는 서로 독립적이다.
     nav('ITEM_COMPLETE')
   }
 
@@ -6878,9 +7601,49 @@ export default function App() {
       return
     }
 
-    await goToTrayMoving(
+    setCurrentItemIndex(
       nextIndex
     )
+
+    nav('TRAY_MOVING')
+
+    const nextTrayId =
+      trayNumber(
+        workItems[nextIndex].tray
+      )
+
+    const supplied =
+      await waitForTraySupplied(
+        nextTrayId
+      )
+
+    if (!supplied) {
+      alert(
+        `${workItems[nextIndex].tray} 공급 완료를 확인하지 못했습니다.`
+      )
+      return
+    }
+
+    const arrivedState =
+      await requestWorkflowTrayArrived()
+
+    if (!arrivedState) {
+      alert(
+        '다음 Tray 도착 상태를 Workflow에 반영하지 못했습니다.'
+      )
+      return
+    }
+
+    if (
+      arrivedState.state !== 'PICKING'
+    ) {
+      alert(
+        `Workflow 상태 오류: ${arrivedState.state}`
+      )
+      return
+    }
+
+    nav('PICKING')
   }
   const handleFinalWeightPass = async () => {
     const workflowState =

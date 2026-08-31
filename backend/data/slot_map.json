@@ -2,21 +2,49 @@
   "version": 1,
   "coordinate_reference": "CARRIAGE_CENTER",
   "description": "X/Z coordinates taught after homing. Later gripper TCP offset can be added without changing the STM32 protocol.",
-  "updated_at": "2026-08-11T19:01:33",
+  "updated_at": "2026-08-28T17:59:55",
   "slots": {
-    "XC1": {
-      "x_mm": 2.7094,
-      "z_mm": 0.0,
-      "note": "1열 중심/Z미매핑",
+    "XC1ZR1": {
+      "x_mm": 322.7563,
+      "z_mm": 416.8813,
+      "note": "",
       "reference": "CARRIAGE_CENTER",
-      "updated_at": "2026-08-11T18:57:16"
+      "updated_at": "2026-08-28T17:59:48"
     },
-    "XC2": {
-      "x_mm": 339.0406,
-      "z_mm": 0.0,
-      "note": "2열 중심/Z미매핑",
+    "XC1ZR2": {
+      "x_mm": 322.7563,
+      "z_mm": 210.1719,
+      "note": "",
       "reference": "CARRIAGE_CENTER",
-      "updated_at": "2026-08-11T19:01:33"
+      "updated_at": "2026-08-28T17:57:59"
+    },
+    "XC1ZR3": {
+      "x_mm": 322.7781,
+      "z_mm": 0.7906,
+      "note": "",
+      "reference": "CARRIAGE_CENTER",
+      "updated_at": "2026-08-28T17:40:37"
+    },
+    "XC2ZR1": {
+      "x_mm": 664.7531,
+      "z_mm": 416.2781,
+      "note": "",
+      "reference": "CARRIAGE_CENTER",
+      "updated_at": "2026-08-28T17:50:07"
+    },
+    "XC2ZR2": {
+      "x_mm": 657.0219,
+      "z_mm": 206.2625,
+      "note": "",
+      "reference": "CARRIAGE_CENTER",
+      "updated_at": "2026-08-28T17:45:52"
+    },
+    "XC2ZR3": {
+      "x_mm": 657.0219,
+      "z_mm": 0.7906,
+      "note": "",
+      "reference": "CARRIAGE_CENTER",
+      "updated_at": "2026-08-28T17:43:23"
     }
   }
 }

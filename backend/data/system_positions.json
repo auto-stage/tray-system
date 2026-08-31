@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "positions": {
+    "CONVEYOR_HANDOFF": {
+      "x_mm": 0.0,
+      "z_mm": 210.1719,
+      "temporary": true,
+      "note": "Temporary conveyor handoff position. X HOME + XC1ZR2 height."
+    }
+  }
+}

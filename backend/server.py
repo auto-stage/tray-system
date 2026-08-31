@@ -15,9 +15,12 @@ from services.work_history import (
 )
 
 from adapters.mock_stage_adapter import MockStageAdapter
-from adapters.stm32_stage_adapter import STM32StageAdapter
 from adapters.mock_vision_adapter import MockVisionAdapter
+from adapters.mock_loadcell_adapter import MockLoadCellAdapter
+from adapters.mock_part_inspection_adapter import MockPartInspectionAdapter
+from services.inspection_service import InspectionService
 from workflow.workflow_controller import WorkflowController
+from workflow.material_flow_controller import MaterialFlowController
 from parts_db import find_part
 
 import asyncio
@@ -42,6 +45,7 @@ DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(exist_ok=True)
 
 RACK_LAYOUT_PATH = DATA_DIR / "rack_layout.json"
+PARTS_CONFIG_PATH = BASE_DIR / "config" / "parts.yaml"
 
 
 # ============================================================
@@ -88,6 +92,10 @@ STAGE_MODE = os.getenv(
 
 if STAGE_MODE == "stm32":
 
+    # pyserial is only required when real STM32 mode is selected.
+    # Mock development can therefore run before the Stage serial stack is installed.
+    from adapters.stm32_stage_adapter import STM32StageAdapter
+
     stage = STM32StageAdapter(
         port=(
             os.getenv(
@@ -109,10 +117,6 @@ else:
     print(
         "[STAGE] MOCK 모드"
     )
-
-# 부품 수량 검사용 Vision
-# 현재 최신 브랜치의 기존 동작을 유지하기 위해 Mock을 그대로 사용한다.
-count_vision = MockVisionAdapter()
 
 # Tray ArUco 검출용 Vision
 VISION_MODE = os.getenv(
@@ -156,6 +160,7 @@ else:
     )
 
 workflow = WorkflowController()
+material_flow = MaterialFlowController()
 
 # 작업지시서 OCR 촬영용 고정 카메라.
 # ArUco 이동부 카메라와 완전히 별도 장치로 관리한다.
@@ -198,6 +203,50 @@ if WORK_ORDER_CAMERA_MODE == "camera":
         )
 else:
     print("[WORK ORDER CAMERA] OFF 모드")
+
+
+# ============================================================
+# 부품 검수 / Load Cell
+# ============================================================
+#
+# 실제 카메라와 로드셀을 아직 수령하지 않은 단계에서는 두 장치 모두
+# Mock Adapter를 사용한다. 실제 하드웨어 연동 시 이 두 Adapter만 교체하고
+# InspectionService와 UI/Workflow 계약은 그대로 유지한다.
+# ============================================================
+
+LOADCELL_MODE = os.getenv(
+    "LOADCELL_MODE",
+    "mock",
+).strip().lower()
+
+if LOADCELL_MODE != "mock":
+    raise RuntimeError(
+        "현재 브랜치에는 실제 Load Cell Adapter가 아직 없습니다. "
+        "하드웨어 수령 전에는 LOADCELL_MODE=mock을 사용하세요."
+    )
+
+loadcell = MockLoadCellAdapter()
+print("[LOAD CELL] MOCK 모드")
+
+PART_INSPECTION_MODE = os.getenv(
+    "PART_INSPECTION_MODE",
+    "mock",
+).strip().lower()
+
+if PART_INSPECTION_MODE != "mock":
+    raise RuntimeError(
+        "현재 브랜치에는 실제 Part Inspection Adapter가 아직 없습니다. "
+        "카메라 수령 전에는 PART_INSPECTION_MODE=mock을 사용하세요."
+    )
+
+part_vision = MockPartInspectionAdapter()
+print("[PART INSPECTION] MOCK 모드")
+
+inspection_service = InspectionService(
+    loadcell=loadcell,
+    part_vision=part_vision,
+    parts_config_path=PARTS_CONFIG_PATH,
+)
 
 
 # ============================================================
@@ -1248,19 +1297,63 @@ def vision_calibration_run():
         ) from error
 
 
+class InspectionRunRequest(BaseModel):
+    part_no: str
+    expected_quantity: int
+
+
+@app.get("/loadcell/status")
+def loadcell_status():
+    return loadcell.get_status()
+
+
+@app.post("/loadcell/tare")
+def loadcell_tare():
+    return loadcell.tare()
+
+
+@app.get("/inspection/status")
+def inspection_status():
+    return inspection_service.get_status()
+
+
+@app.get("/parts/config")
+def parts_config():
+    return inspection_service.get_parts_config()
+
+
+@app.post("/inspection/reload-config")
+def inspection_reload_config():
+    inspection_service.reload_config()
+    return {
+        "success": True,
+        "configured_parts": inspection_service.get_status()["configured_parts"],
+    }
+
+
+@app.post("/inspection/run")
+def inspection_run(request: InspectionRunRequest):
+    return inspection_service.run(
+        part_no=request.part_no,
+        expected_quantity=request.expected_quantity,
+    )
+
+
 @app.post("/vision/count")
 def vision_count(
     request:
         VisionCountRequest
 ):
+    """Legacy compatibility endpoint.
 
-    return (
-        count_vision.detect_part_count(
-            part_no=
-                request.part_no,
-            expected_quantity=
-                request.expected_quantity,
-        )
+    The primary quantity source is now the load cell and camera vision is a
+    part/appearance cross-check. Existing callers can keep using /vision/count
+    during the transition because the response retains matched and
+    detected_quantity fields.
+    """
+    return inspection_service.run(
+        part_no=request.part_no,
+        expected_quantity=request.expected_quantity,
     )
 
 
@@ -1468,6 +1561,12 @@ def stage_move_to_tray(
     )
 
 
+@app.post("/stage/move-to-handoff")
+def stage_move_to_handoff():
+
+    return stage.move_to_handoff()
+
+
 @app.post("/stage/pause")
 def stage_pause():
 
@@ -1544,6 +1643,240 @@ def relocation_plan(
             "success": False,
             "message": str(error),
         }
+
+
+# ============================================================
+# Material Flow API
+# Stage 공급 / Handoff / 회수
+# ============================================================
+
+class MaterialFlowStartRequest(
+    BaseModel
+):
+    items: list[dict]
+
+
+@app.post("/material-flow/start")
+def material_flow_start(
+    request: MaterialFlowStartRequest
+):
+
+    try:
+        data = material_flow.start(
+            request.items
+        )
+
+        return {
+            "success": True,
+            "data": data,
+        }
+
+    except ValueError as error:
+        return {
+            "success": False,
+            "message": str(error),
+        }
+
+
+@app.get("/material-flow/status")
+def material_flow_status():
+
+    return {
+        "success": True,
+        "data":
+            material_flow.get_status(),
+    }
+
+
+@app.post(
+    "/material-flow/supply/tray-arrived"
+)
+def material_flow_supply_tray_arrived():
+
+    return {
+        "success": True,
+        "data":
+            material_flow.supply_tray_arrived(),
+    }
+
+
+@app.post(
+    "/material-flow/supply/alignment-complete"
+)
+def material_flow_supply_alignment_complete():
+
+    return {
+        "success": True,
+        "data":
+            material_flow.supply_alignment_complete(),
+    }
+
+
+@app.post(
+    "/material-flow/supply/extraction-complete"
+)
+def material_flow_supply_extraction_complete():
+
+    return {
+        "success": True,
+        "data":
+            material_flow.supply_extraction_complete(),
+    }
+
+
+@app.post(
+    "/material-flow/supply/handoff-complete"
+)
+def material_flow_supply_handoff_complete():
+
+    try:
+        data = (
+            material_flow
+            .supply_handoff_complete()
+        )
+
+        return {
+            "success": True,
+            "data": data,
+        }
+
+    except ValueError as error:
+        return {
+            "success": False,
+            "message": str(error),
+        }
+
+
+@app.post(
+    "/material-flow/return-ready/{tray_id}"
+)
+def material_flow_return_ready(
+    tray_id: int
+):
+
+    try:
+        data = material_flow.enqueue_return(
+            tray_id
+        )
+
+        return {
+            "success": True,
+            "data": data,
+        }
+
+    except ValueError as error:
+        return {
+            "success": False,
+            "message": str(error),
+        }
+
+
+@app.post(
+    "/material-flow/return/identified/{tray_id}"
+)
+def material_flow_return_identified(
+    tray_id: int
+):
+
+    try:
+        data = (
+            material_flow
+            .return_tray_identified(
+                tray_id
+            )
+        )
+
+        return {
+            "success": True,
+            "data": data,
+        }
+
+    except ValueError as error:
+        return {
+            "success": False,
+            "message": str(error),
+        }
+
+
+@app.post(
+    "/material-flow/return/pick-complete"
+)
+def material_flow_return_pick_complete():
+
+    try:
+        data = (
+            material_flow
+            .return_pick_complete()
+        )
+
+        return {
+            "success": True,
+            "data": data,
+        }
+
+    except ValueError as error:
+        return {
+            "success": False,
+            "message": str(error),
+        }
+
+
+@app.post(
+    "/material-flow/return/slot-arrived"
+)
+def material_flow_return_slot_arrived():
+
+    try:
+        data = (
+            material_flow
+            .return_slot_arrived()
+        )
+
+        return {
+            "success": True,
+            "data": data,
+        }
+
+    except ValueError as error:
+        return {
+            "success": False,
+            "message": str(error),
+        }
+
+
+@app.post(
+    "/material-flow/return/insert-complete"
+)
+def material_flow_return_insert_complete():
+
+    try:
+        data = (
+            material_flow
+            .return_insert_complete()
+        )
+
+        return {
+            "success": True,
+            "data": data,
+        }
+
+    except ValueError as error:
+        return {
+            "success": False,
+            "message": str(error),
+        }
+
+
+@app.post(
+    "/material-flow/return/handoff-arrived"
+)
+def material_flow_return_handoff_arrived():
+
+    return {
+        "success": True,
+        "data":
+            material_flow.return_handoff_arrived(),
+    }
 
 
 # ============================================================

@@ -409,10 +409,13 @@ git reset --hard
 - PC용 Stage Manual Control 구현
 - STM32 Serial Protocol 정리
 - ArUco 내부 Stage Serial과 공통 Stage Control 계층 정리
-- Camera → Stage extrinsic calibration
+- 이동부 ArUco Camera → Carriage calibration
 - OCR 결과 → Tray ID 매핑
 - Tray ID → ArUco Target 연계
-- Vision Grip Target → Stage Target 변환
+- Vision Grip Target → Stage X/Z 폐루프 보정 실기 검증
+- Load Cell 실제 Adapter 연동 및 단위중량/공차 캘리브레이션
+- 고정 카메라 Tray ROI 및 부품 종류/형상/크기 검수 실기 검증
+- Mock Part Vision → OpenCV/YOLO 기반 실제 검수 Adapter 교체
 - 통합 Safety/Interlock
 - 전체 자동 조달 Sequence 구현
 - 통합 GUI 구성
@@ -426,3 +429,30 @@ X-Z Stage 좌표 매핑, STM32 연동, HOME 안전 로직 및
 실제 장비 적용 절차는 아래 문서를 참고하세요.
 
 - [Stage Mapping Integration Guide](docs/STAGE_MAPPING_INTEGRATION.md)
+
+## Hardware-free Inspection Integration
+
+카메라와 Load Cell 수령 전에는 다음 Mock 계층으로 통합 흐름을 검증합니다.
+
+- `MockLoadCellAdapter`: 중량 기반 수량 판정 인터페이스 검증
+- `MockPartInspectionAdapter`: 부품 존재/종류/외형 검수 인터페이스 검증
+- `InspectionService`: Load Cell 수량 + Camera 검수 결과를 종합해 PASS/NG 판정
+- `backend/config/parts.yaml`: 실제 하드웨어 실측값을 추후 입력하는 부품별 설정
+
+기본 개발 모드는 다음과 같습니다.
+
+```bash
+LOADCELL_MODE=mock PART_INSPECTION_MODE=mock
+```
+
+주요 API:
+
+- `GET /loadcell/status`
+- `POST /loadcell/tare`
+- `GET /inspection/status`
+- `POST /inspection/run`
+- `GET /parts/config`
+- `POST /inspection/reload-config`
+
+`parts.yaml`의 `unit_weight_g`, `empty_tray_weight_g`, `tolerance_g`, Vision ROI/크기 기준은
+실제 센서와 카메라가 장착되기 전까지 `null` 및 `calibrated: false` 상태를 유지합니다.

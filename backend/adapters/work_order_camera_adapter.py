@@ -66,6 +66,17 @@ class WorkOrderCameraAdapter:
             self._last_error = None
             return frame
 
+    def read_frame(self, copy: bool = True):
+        """Return the latest BGR frame for OCR/part-inspection consumers.
+
+        The fixed camera is shared by work-order OCR and future tray part
+        inspection. Access remains serialized through the existing camera lock.
+        """
+        frame = self._read_frame()
+        if frame is None:
+            return None
+        return frame.copy() if copy else frame
+
     def get_status(self) -> dict[str, Any]:
         frame = self._read_frame()
         if frame is None:
