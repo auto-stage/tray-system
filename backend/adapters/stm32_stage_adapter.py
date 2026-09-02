@@ -1130,29 +1130,339 @@ class STM32StageAdapter(StageAdapter):
         x_mm: float,
         z_mm: float,
     ):
+        """
+        X/Z 일반 위치 이동을 동시 수행한다.
 
-        # 기존 매핑 GUI와 동일하게 X -> Z
-        for axis, target in (
-            ("X", x_mm),
-            ("Z", z_mm),
-        ):
+        HOME은 기존 X -> Z 순차 방식을 유지하고,
+        Tray / Handoff / Vision 상대이동에서 사용하는
+        이 함수만 X/Z 동시구동한다.
+        """
 
-            result = (
-                self._move_axis(
-                    axis,
-                    target,
+        # ----------------------------------------------------
+        # 1. 이동 전 X/Z 상태를 한 번에 확인
+        # ----------------------------------------------------
+
+        status = self.refresh_status()
+
+        if not status.get("connected"):
+            return {
+                "success": False,
+                "message":
+                    "STM32 Serial 연결이 없습니다.",
+                "status": status,
+            }
+
+        if status.get("estop"):
+            return {
+                "success": False,
+                "message":
+                    "ESTOP 상태입니다.",
+                "status": status,
+            }
+
+        targets = {
+            "X": float(x_mm),
+            "Z": float(z_mm),
+        }
+
+        deltas = {}
+        active_axes = []
+
+        for axis in ("X", "Z"):
+
+            axis_status = self._status[
+                axis.lower()
+            ]
+
+            if not axis_status.get("homed"):
+                return {
+                    "success": False,
+                    "message":
+                        f"{axis}축 HOME이 필요합니다.",
+                    "status": status,
+                }
+
+            if (
+                axis_status.get("mode")
+                != "IDLE"
+            ):
+                return {
+                    "success": False,
+                    "message":
+                        f"{axis}축이 "
+                        f"{axis_status.get('mode')} "
+                        "상태입니다.",
+                    "status": status,
+                }
+
+            delta = (
+                targets[axis]
+                -
+                float(
+                    axis_status["pos_mm"]
                 )
             )
 
-            if not result[
-                "success"
-            ]:
+            deltas[axis] = delta
+
+            if (
+                abs(delta)
+                >
+                POSITION_TOLERANCE_MM
+            ):
+                active_axes.append(axis)
+
+        # 둘 다 이미 목표 위치
+        if not active_axes:
+            return {
+                "success": True,
+                "message":
+                    "X/Z축 이미 목표 위치",
+                "target_mm": targets,
+                "delta_mm": deltas,
+                "status": status,
+            }
+
+        # ----------------------------------------------------
+        # 2. 필요한 축 ENABLE
+        # ----------------------------------------------------
+
+        for axis in active_axes:
+
+            if self._stop_event.is_set():
+                return {
+                    "success": False,
+                    "cancelled": True,
+                    "message":
+                        "X/Z 이동이 STOP으로 중단되었습니다.",
+                    "status":
+                        self.get_status(),
+                }
+
+            result = self._send_expect(
+                f"ENABLE {axis} 1"
+            )
+
+            if not result.get("success"):
                 return result
 
+        # ----------------------------------------------------
+        # 3. X/Z MOVE 명령 연속 전송
+        #
+        # 각 MOVE 명령은 STM32에서 축 상태만 시작시키고
+        # 즉시 ACK하므로 X 명령 직후 Z 명령을 보내면
+        # 두 축의 실제 이동 시간이 겹친다.
+        # ----------------------------------------------------
+
+        started_axes = []
+
+        for axis in active_axes:
+
+            if self._stop_event.is_set():
+
+                self._send_expect(
+                    "STOP ALL HARD",
+                    timeout=1.0,
+                )
+
+                return {
+                    "success": False,
+                    "cancelled": True,
+                    "message":
+                        "X/Z 이동이 STOP으로 중단되었습니다.",
+                    "status":
+                        self.get_status(),
+                }
+
+            profile = MOVE_PROFILE[axis]
+
+            command = (
+                f"MOVE {axis} "
+                f"{deltas[axis]:.6g} "
+                f"{profile['speed']:.6g} "
+                f"{profile['accel']:.6g}"
+            )
+
+            result = self._send_expect(
+                command
+            )
+
+            if not result.get("success"):
+
+                # 한 축이라도 이미 출발했을 수 있으므로
+                # 전체 축을 즉시 정지한다.
+                self._send_expect(
+                    "STOP ALL HARD",
+                    timeout=1.0,
+                )
+
+                return {
+                    "success": False,
+                    "message":
+                        f"{axis} MOVE 명령 실패: "
+                        f"{result.get('message')}",
+                    "status":
+                        self.refresh_status(),
+                }
+
+            started_axes.append(axis)
+
+        # ----------------------------------------------------
+        # 4. X/Z를 하나의 loop에서 동시에 감시
+        # ----------------------------------------------------
+
+        deadline = (
+            time.monotonic()
+            +
+            MOVE_TIMEOUT_SEC
+        )
+
+        while (
+            time.monotonic()
+            <
+            deadline
+        ):
+
+            if self._stop_event.is_set():
+
+                # stop()이 STM32에도 STOP ALL HARD를 보내지만,
+                # 이 경로에서도 안전하게 이후 진행을 즉시 중단.
+                return {
+                    "success": False,
+                    "cancelled": True,
+                    "message":
+                        "X/Z 이동이 STOP으로 중단되었습니다.",
+                    "status":
+                        self.get_status(),
+                }
+
+            status = self.refresh_status()
+
+            if status.get("estop"):
+
+                self._send_expect(
+                    "STOP ALL HARD",
+                    timeout=1.0,
+                )
+
+                return {
+                    "success": False,
+                    "message":
+                        "X/Z 이동 중 ESTOP",
+                    "status": status,
+                }
+
+            all_reached = True
+
+            for axis in active_axes:
+
+                axis_status = self._status[
+                    axis.lower()
+                ]
+
+                mode = axis_status["mode"]
+
+                reached = (
+                    abs(
+                        float(
+                            axis_status[
+                                "pos_mm"
+                            ]
+                        )
+                        -
+                        targets[axis]
+                    )
+                    <=
+                    POSITION_TOLERANCE_MM
+                )
+
+                # 한 축의 FAULT는 전체 이동 실패
+                if mode == "FAULT":
+
+                    self._send_expect(
+                        "STOP ALL HARD",
+                        timeout=1.0,
+                    )
+
+                    self.last_error = (
+                        f"{axis}축 이동 중 FAULT"
+                    )
+
+                    return {
+                        "success": False,
+                        "message":
+                            self.last_error,
+                        "status": status,
+                    }
+
+                # MOVE를 시작한 축이 IDLE인데
+                # 목표에 도달하지 못했으면
+                # Limit/STOP/비정상 종료로 판단한다.
+                if (
+                    mode == "IDLE"
+                    and
+                    not reached
+                ):
+
+                    self._send_expect(
+                        "STOP ALL HARD",
+                        timeout=1.0,
+                    )
+
+                    self.last_error = (
+                        f"{axis} 목표 미도달: "
+                        f"target="
+                        f"{targets[axis]:.4f}, "
+                        f"reported="
+                        f"{axis_status['pos_mm']:.4f}"
+                    )
+
+                    return {
+                        "success": False,
+                        "message":
+                            self.last_error,
+                        "status": status,
+                    }
+
+                if not (
+                    mode == "IDLE"
+                    and
+                    reached
+                ):
+                    all_reached = False
+
+            if all_reached:
+
+                return {
+                    "success": True,
+                    "message":
+                        "X/Z 동시 목표좌표 이동 완료",
+                    "target_mm": targets,
+                    "delta_mm": deltas,
+                    "status": status,
+                }
+
+            time.sleep(
+                STATUS_POLL_SEC
+            )
+
+        # ----------------------------------------------------
+        # 5. Timeout -> X/Z 전체 HARD STOP
+        # ----------------------------------------------------
+
+        self._send_expect(
+            "STOP ALL HARD",
+            timeout=1.0,
+        )
+
+        self.last_error = (
+            "X/Z MOVE TIMEOUT"
+        )
+
         return {
-            "success": True,
+            "success": False,
             "message":
-                "X/Z 목표좌표 이동 완료",
+                self.last_error,
             "status":
                 self.refresh_status(),
         }
