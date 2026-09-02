@@ -99,7 +99,7 @@ def format_part_spec(config: dict[str, Any]) -> str:
     nominal = str(config.get("nominal_size") or "").strip()
     class_key = str(config.get("class_key") or "")
 
-    if class_key in {"hex_bolt", "socket_head_bolt"}:
+    if class_key in {"t_bolt", "socket_head_bolt"}:
         length = _number_text(config.get("length_mm"))
         if nominal and length:
             return f"{nominal} × {length} mm"
@@ -109,7 +109,7 @@ def format_part_spec(config: dict[str, Any]) -> str:
 
     fields_by_class = {
         "corner_bracket": ("width_mm", "height_mm", "thickness_mm"),
-        "straight_connector": ("length_mm", "width_mm", "height_mm"),
+        "t_nut": ("length_mm", "width_mm", "height_mm"),
     }
     if class_key in fields_by_class:
         values = [_number_text(config.get(field)) for field in fields_by_class[class_key]]

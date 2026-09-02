@@ -24,10 +24,10 @@
 대상 class는 다음 6개로 고정한다.
 
 - `flange_nut` — 플랜지 너트
-- `hex_bolt` — 육각 볼트
+- `t_bolt` — T 볼트
 - `socket_head_bolt` — 렌치 볼트
 - `corner_bracket` — 코너 브라켓
-- `straight_connector` — 직선 연결구
+- `t_nut` — T 너트
 - `l_bracket` — L형 브라켓
 
 잘못 촬영한 Reference는 선택한 class 단위로 초기화한다. 이 작업은 확인 대화상자를 거치며 해당 class의 Reference와 관련 시험 기록을 함께 지운다.
@@ -43,9 +43,9 @@
 
 특히 다음 confusion을 우선 확인한다.
 
-- `hex_bolt` ↔ `socket_head_bolt`
+- `t_bolt` ↔ `socket_head_bolt`
 - `corner_bracket` ↔ `l_bracket`
-- `corner_bracket` ↔ `straight_connector`
+- `corner_bracket` ↔ `t_nut`
 
 UI score는 OpenCV feature distance를 변환한 상대 점수이며 확률이 아니다. Reference 범위를 벗어나거나 1·2위 class의 거리가 충분히 벌어지지 않으면 정상적으로 `unknown`을 반환한다.
 

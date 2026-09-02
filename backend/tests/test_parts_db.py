@@ -19,17 +19,17 @@ class PartsDatabaseTest(unittest.TestCase):
             set(catalog),
             {
                 "flange_nut",
-                "hex_bolt",
+                "t_bolt",
                 "socket_head_bolt",
                 "corner_bracket",
-                "straight_connector",
+                "t_nut",
                 "l_bracket",
             },
         )
         self.assertTrue(all(item["weight_g"] is None for item in catalog.values()))
 
     def test_part_number_and_alias_resolve_to_canonical_class(self) -> None:
-        self.assertEqual(find_part_by_identifier("B001")["class_key"], "hex_bolt")
+        self.assertEqual(find_part_by_identifier("B001")["class_key"], "t_bolt")
         self.assertEqual(find_part_by_identifier("육각렌치볼트")["class_key"], "socket_head_bolt")
 
     def test_unmeasured_spec_is_not_scored_as_real_ocr_text(self) -> None:

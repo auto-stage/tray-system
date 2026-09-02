@@ -20,10 +20,10 @@ parts:
       calibrated: false
       roi: null
 
-  hex_bolt:
+  t_bolt:
     yolo_class_id: 1
-    display_name: "육각 볼트"
-    ocr_aliases: ["육각 볼트", "육각볼트"]
+    display_name: "T 볼트"
+    ocr_aliases: ["T 볼트", "T볼트"]
     part_no: "B001"
     tray_id: 1
     nominal_size: null
@@ -62,10 +62,10 @@ parts:
       calibrated: false
       roi: null
 
-  straight_connector:
+  t_nut:
     yolo_class_id: 4
-    display_name: "직선 연결구"
-    ocr_aliases: ["직선 연결구", "직선연결구"]
+    display_name: "T 너트"
+    ocr_aliases: ["T 너트", "T너트"]
     part_no: "W001"
     tray_id: 5
     length_mm: null

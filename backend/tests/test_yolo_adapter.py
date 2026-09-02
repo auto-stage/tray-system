@@ -33,7 +33,7 @@ class Result:
 
 
 class FakeModel:
-    names = {0: "flange_nut", 1: "hex_bolt", 2: "socket_head_bolt", 3: "corner_bracket", 4: "straight_connector", 5: "l_bracket"}
+    names = {0: "flange_nut", 1: "t_bolt", 2: "socket_head_bolt", 3: "corner_bracket", 4: "t_nut", 5: "l_bracket"}
     def predict(self, **kwargs): return [Result()]
 
 
@@ -53,7 +53,7 @@ class YoloAdapterTest(unittest.TestCase):
         with tempfile.NamedTemporaryFile(suffix=".pt") as weight:
             self.adapter.load_model(weight.name)
             result = self.adapter.infer_frame(np.zeros((100, 200, 3), dtype=np.uint8))
-        self.assertEqual(result["counts"]["hex_bolt"], 1)
+        self.assertEqual(result["counts"]["t_bolt"], 1)
         self.assertEqual(result["counts"]["flange_nut"], 0)
         self.assertEqual(len(result["detections"]), 1)
 

@@ -48,15 +48,15 @@ interface WorkHistoryRecord {
 // DATA
 // ============================================================
 const TRAYS_INITIAL: TrayData[] = [
-  { id: 'TRAY 01', partNo: 'B001', name: '육각 볼트', spec: '-', stock: 120, maxStock: 200, status: 'READY' },
+  { id: 'TRAY 01', partNo: 'B001', name: 'T 볼트', spec: '-', stock: 120, maxStock: 200, status: 'READY' },
   { id: 'TRAY 02', partNo: 'B002', name: '렌치 볼트', spec: '-', stock: 85, maxStock: 200, status: 'READY' },
   { id: 'TRAY 03', partNo: 'S001', name: '코너 브라켓', spec: '-', stock: 200, maxStock: 300, status: 'READY' },
   { id: 'TRAY 04', partNo: 'N001', name: '플랜지 너트', spec: '-', stock: 150, maxStock: 200, status: 'READY' },
-  { id: 'TRAY 05', partNo: 'W001', name: '직선 연결구', spec: '-', stock: 180, maxStock: 200, status: 'READY' },
+  { id: 'TRAY 05', partNo: 'W001', name: 'T 너트', spec: '-', stock: 180, maxStock: 200, status: 'READY' },
   { id: 'TRAY 06', partNo: 'W002', name: 'L형 브라켓', spec: '-', stock: 28, maxStock: 200, status: 'LOW STOCK' },
 ]
 const WORK_ITEMS_INITIAL: WorkItem[] = [
-  { no: '01', partNo: 'B001', classKey: 'hex_bolt', name: '육각 볼트', spec: '-', qty: 10, unit: 'EA', tray: 'TRAY 01', stock: 120, status: '정상' },
+  { no: '01', partNo: 'B001', classKey: 't_bolt', name: 'T 볼트', spec: '-', qty: 10, unit: 'EA', tray: 'TRAY 01', stock: 120, status: '정상' },
   { no: '02', partNo: 'B002', classKey: 'socket_head_bolt', name: '렌치 볼트', spec: '-', qty: 8, unit: 'EA', tray: 'TRAY 02', stock: 85, status: '정상' },
   { no: '03', partNo: 'S001', classKey: 'corner_bracket', name: '코너 브라켓', spec: '-', qty: 20, unit: 'EA', tray: 'TRAY 03', stock: 200, status: '정상' },
 ]
@@ -4386,19 +4386,19 @@ function CameraMonitorPreview({
 
 const PART_CLASS_ORDER = [
   'flange_nut',
-  'hex_bolt',
+  't_bolt',
   'socket_head_bolt',
   'corner_bracket',
-  'straight_connector',
+  't_nut',
   'l_bracket',
 ]
 
 const PART_CLASS_LABELS: Record<string, string> = {
   flange_nut: '플랜지 너트',
-  hex_bolt: '육각 볼트',
+  t_bolt: 'T 볼트',
   socket_head_bolt: '렌치 볼트',
   corner_bracket: '코너 브라켓',
-  straight_connector: '직선 연결구',
+  t_nut: 'T 너트',
   l_bracket: 'L형 브라켓',
 }
 
