@@ -8,6 +8,7 @@ import time
 from typing import Optional
 
 import serial
+import re
 
 from .stage_adapter import StageAdapter
 from .slot_resolver import resolve_tray_target
@@ -355,6 +356,75 @@ class STM32StageAdapter(StageAdapter):
                     "success": False,
                     "message": str(exc),
                 }
+
+    # ========================================================
+    # Load Cell / HX711
+    # ========================================================
+
+    def read_loadcell(self):
+        """
+        STM32와 공유 중인 동일 Serial 연결을 사용하여
+        HX711 LOAD 명령의 실제 무게값을 읽는다.
+
+        STM32 response:
+            LOAD_RAW 60835 WEIGHT_G 0.0
+        """
+
+        if (
+            not self._serial
+            or
+            not self._serial.is_open
+        ):
+            try:
+                self.connect()
+            except Exception as exc:
+                return {
+                    "success": False,
+                    "message": f"STM32 연결 실패: {exc}",
+                }
+
+        result = self._send_expect(
+            "LOAD",
+            success="LOAD_RAW",
+            timeout=2.0,
+        )
+
+        if not result.get("success"):
+            return {
+                "success": False,
+                "message": result.get(
+                    "message",
+                    "LOAD 명령 실패",
+                ),
+                "received": result.get(
+                    "received",
+                    [],
+                ),
+            }
+
+        line = result.get("message", "")
+
+        match = re.fullmatch(
+            r"LOAD_RAW\s+(-?\d+)\s+WEIGHT_G\s+(-?\d+(?:\.\d+)?)",
+            line,
+        )
+
+        if not match:
+            return {
+                "success": False,
+                "message": f"LOAD 응답 파싱 실패: {line}",
+            }
+
+        raw = int(match.group(1))
+        weight_g = float(match.group(2))
+
+        return {
+            "success": True,
+            "connected": True,
+            "raw": raw,
+            "weight_g": weight_g,
+            "message": line,
+        }
 
     # ========================================================
     # STATUS

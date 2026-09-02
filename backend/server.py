@@ -219,14 +219,36 @@ LOADCELL_MODE = os.getenv(
     "mock",
 ).strip().lower()
 
-if LOADCELL_MODE != "mock":
-    raise RuntimeError(
-        "현재 브랜치에는 실제 Load Cell Adapter가 아직 없습니다. "
-        "하드웨어 수령 전에는 LOADCELL_MODE=mock을 사용하세요."
+if LOADCELL_MODE == "stm32":
+
+    if STAGE_MODE != "stm32":
+        raise RuntimeError(
+            "LOADCELL_MODE=stm32 사용 시 "
+            "STAGE_MODE=stm32도 함께 설정해야 합니다."
+        )
+
+    from adapters.stm32_loadcell_adapter import STM32LoadCellAdapter
+
+    loadcell = STM32LoadCellAdapter(
+        stage=stage,
     )
 
-loadcell = MockLoadCellAdapter()
-print("[LOAD CELL] MOCK 모드")
+    print(
+        "[LOAD CELL] STM32 HX711 실제 모드"
+    )
+
+elif LOADCELL_MODE == "mock":
+
+    loadcell = MockLoadCellAdapter()
+
+    print(
+        "[LOAD CELL] MOCK 모드"
+    )
+
+else:
+    raise RuntimeError(
+        f"지원하지 않는 LOADCELL_MODE: {LOADCELL_MODE}"
+    )
 
 PART_INSPECTION_MODE = os.getenv(
     "PART_INSPECTION_MODE",

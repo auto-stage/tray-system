@@ -199,6 +199,11 @@ typedef struct
 #define SERVO_CENTER_PULSE_US               1500U
 #define SERVO_MAX_PULSE_US                  2500U
 
+/* Gripper servo temporary angles.
+ * 실제 그리퍼 장착 후 OPEN/CLOSE 각도만 재조정한다. */
+#define GRIP_OPEN_ANGLE_DEG                 30U
+#define GRIP_CLOSE_ANGLE_DEG                150U
+
 #define STAGE_CONTROL_PERIOD_MS            10U
 #define STAGE_RX_RING_SIZE                 512U
 #define STAGE_LINE_SIZE                    192U
@@ -1340,6 +1345,47 @@ static void StageProtocol_HandleLine(char *line)
     }
     return;
   }
+  if (strcmp(command, "GRIP") == 0)
+  {
+    char *action = strtok_r(NULL, " \t", &save);
+    char output[64];
+    uint32_t angle;
+
+    if (action == NULL)
+    {
+      StageProtocol_SendText("ERR GRIP_PARAM\r\n");
+      return;
+    }
+
+    StageProtocol_Uppercase(action);
+
+    if (strcmp(action, "OPEN") == 0)
+    {
+      angle = GRIP_OPEN_ANGLE_DEG;
+    }
+    else if (strcmp(action, "CLOSE") == 0)
+    {
+      angle = GRIP_CLOSE_ANGLE_DEG;
+    }
+    else
+    {
+      StageProtocol_SendText("ERR GRIP_PARAM\r\n");
+      return;
+    }
+
+    Servo_SetAngle(angle);
+
+    (void)snprintf(
+        output,
+        sizeof(output),
+        "OK GRIP %s %lu\r\n",
+        action,
+        (unsigned long)angle);
+
+    StageProtocol_SendText(output);
+    return;
+  }
+
   if (strcmp(command, "SERVO") == 0)
   {
     char *arg = strtok_r(NULL, " \t", &save);
