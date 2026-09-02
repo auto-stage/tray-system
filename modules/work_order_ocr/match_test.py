@@ -3,7 +3,7 @@ import re
 
 
 part_db = [
-    {"name": "육각볼트",       "spec": "M6X20", "tray": 1},
+    {"name": "T볼트",       "spec": "M6X20", "tray": 1},
     {"name": "육각렌치볼트",   "spec": "M5X15", "tray": 2},
     {"name": "십자머리나사",   "spec": "M4X12", "tray": 3},
     {"name": "육각너트",       "spec": "M6",    "tray": 4},

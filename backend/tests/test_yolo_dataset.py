@@ -38,14 +38,14 @@ class YoloDatasetTest(unittest.TestCase):
         self.temporary.cleanup()
 
     def test_pixel_normalized_round_trip_and_invalid_box(self):
-        item = self.service.capture(suggested_class_key="hex_bolt", capture_group="one")
-        saved = self.service.save_annotation(item["image_id"], boxes=[{"class_key": "hex_bolt", "x": 20, "y": 10, "width": 80, "height": 40}], state="MANUAL")
+        item = self.service.capture(suggested_class_key="t_bolt", capture_group="one")
+        saved = self.service.save_annotation(item["image_id"], boxes=[{"class_key": "t_bolt", "x": 20, "y": 10, "width": 80, "height": 40}], state="MANUAL")
         yolo = saved["boxes"][0]["yolo"]
         restored = self.service.normalized_to_pixel(yolo, 200, 100)
         for key, expected in {"x": 20, "y": 10, "width": 80, "height": 40}.items():
             self.assertAlmostEqual(restored[key], expected, places=5)
         with self.assertRaises(YoloDatasetError):
-            self.service.save_annotation(item["image_id"], boxes=[{"class_key": "hex_bolt", "x": 190, "y": 0, "width": 20, "height": 10}], state="MANUAL")
+            self.service.save_annotation(item["image_id"], boxes=[{"class_key": "t_bolt", "x": 190, "y": 0, "width": 20, "height": 10}], state="MANUAL")
 
     def test_background_is_not_unlabeled(self):
         item = self.service.capture(capture_group="background")

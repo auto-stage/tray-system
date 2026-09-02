@@ -76,7 +76,7 @@ class InspectionServiceTest(unittest.TestCase):
     def test_mock_cannot_register_reference_or_validation_trial(self) -> None:
         result = self.service.debug_action(
             action="capture_reference",
-            class_key="hex_bolt",
+            class_key="t_bolt",
         )
         self.assertFalse(result["success"])
         self.assertTrue(result["mock"])

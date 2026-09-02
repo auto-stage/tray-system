@@ -60,7 +60,7 @@ class OpenCVPartInspectionTest(unittest.TestCase):
 
         frame = self.background()
         cv2.rectangle(frame, (60, 108), (260, 132), (10, 10, 10), thickness=-1)
-        frames["hex_bolt"] = frame
+        frames["t_bolt"] = frame
 
         frame = self.background()
         cv2.rectangle(frame, (80, 95), (240, 145), (10, 10, 10), thickness=-1)
@@ -73,7 +73,7 @@ class OpenCVPartInspectionTest(unittest.TestCase):
 
         frame = self.background()
         cv2.rectangle(frame, (90, 75), (230, 165), (10, 10, 10), thickness=-1)
-        frames["straight_connector"] = frame
+        frames["t_nut"] = frame
 
         frame = self.background()
         cv2.rectangle(frame, (105, 50), (130, 190), (10, 10, 10), thickness=-1)
@@ -88,7 +88,7 @@ class OpenCVPartInspectionTest(unittest.TestCase):
 
         self.source.frame = self.single_object()
         reference = self.adapter.capture_reference(
-            "hex_bolt",
+            "t_bolt",
             {"rotation_deg": "0", "position": "center"},
         )
         self.assertTrue(reference["success"])
@@ -101,15 +101,15 @@ class OpenCVPartInspectionTest(unittest.TestCase):
         self.assertIsNone(prediction["class_key"])
         self.assertEqual(prediction["unknown_reason"], "REFERENCE_SAMPLES_INCOMPLETE")
 
-        trial = self.adapter.run_classification_test("hex_bolt")
+        trial = self.adapter.run_classification_test("t_bolt")
         self.assertEqual(trial["outcome"], "unknown")
         self.assertFalse(trial["validation"]["mock_results_included"])
-        self.assertEqual(trial["validation"]["by_class"]["hex_bolt"]["unknown"], 1)
+        self.assertEqual(trial["validation"]["by_class"]["t_bolt"]["unknown"], 1)
         self.assertIsNotNone(self.adapter.get_debug_jpeg())
 
-        cleared = self.adapter.clear_class("hex_bolt")
+        cleared = self.adapter.clear_class("t_bolt")
         self.assertEqual(cleared["removed_samples"], 1)
-        self.assertEqual(self.adapter.get_status()["sample_counts"]["hex_bolt"], 0)
+        self.assertEqual(self.adapter.get_status()["sample_counts"]["t_bolt"], 0)
 
     def test_no_camera_frame_never_creates_reference(self) -> None:
         result = self.adapter.capture_reference("flange_nut")
