@@ -1227,6 +1227,20 @@ static void Stage_ProcessAxis10ms(StageAxis *axis)
   {
     if ((float)axis->current_hz <= ((float)axis->start_hz + delta_hz))
     {
+      /*
+       * HOME BACKOFF는 목표 거리까지 반드시 완료한다.
+       * 감속 과정에서 조기 IDLE로 종료되면
+       * HOME_WAIT_SLOW -> HOME_SLOW 재접근이 수행되지 않는다.
+       */
+      if (axis->mode == STAGE_MODE_HOME_BACKOFF)
+      {
+        if (axis->current_hz != axis->start_hz)
+        {
+          Stage_SetFrequency(axis, axis->start_hz);
+        }
+        return;
+      }
+
       Stage_TimerStop(axis);
       axis->mode = STAGE_MODE_IDLE;
       return;
