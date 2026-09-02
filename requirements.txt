@@ -13,3 +13,6 @@ fastapi
 uvicorn
 python-multipart
 pymupdf
+
+# YOLO Part Inspection (already present on the target system)
+ultralytics==8.3.239

@@ -1,7 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel, Field
 
 from services.relocation import build_relocation_plan
 from services.inventory import (
@@ -18,11 +18,12 @@ from adapters.mock_stage_adapter import MockStageAdapter
 from adapters.mock_vision_adapter import MockVisionAdapter
 from adapters.mock_loadcell_adapter import MockLoadCellAdapter
 from adapters.mock_part_inspection_adapter import MockPartInspectionAdapter
+from adapters.work_order_camera_adapter import WorkOrderCameraAdapter
 from services.inspection_service import InspectionService
 from workflow.workflow_controller import WorkflowController
 from workflow.material_flow_controller import MaterialFlowController
 from workflow.material_flow_executor import MaterialFlowExecutor
-from parts_db import find_part
+from parts_db import find_part, load_parts_catalog
 
 import asyncio
 import json
@@ -31,6 +32,9 @@ import sys
 from pathlib import Path
 import shutil
 import os
+import yaml
+import cv2
+import uuid
 
 
 # ============================================================
@@ -47,6 +51,92 @@ DATA_DIR.mkdir(exist_ok=True)
 
 RACK_LAYOUT_PATH = DATA_DIR / "rack_layout.json"
 PARTS_CONFIG_PATH = BASE_DIR / "config" / "parts.yaml"
+CAMERAS_CONFIG_PATH = BASE_DIR / "config" / "cameras.yaml"
+PART_CLASSIFIER_PROFILE_PATH = DATA_DIR / "part_classifier_profile.json"
+PART_CAPTURE_ROOT = BASE_DIR.parent / "captures" / "part_inspection"
+
+
+def load_camera_role_config() -> dict:
+    if not CAMERAS_CONFIG_PATH.is_file():
+        return {}
+    with CAMERAS_CONFIG_PATH.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle) or {}
+    cameras = raw.get("cameras", {})
+    return cameras if isinstance(cameras, dict) else {}
+
+
+CAMERA_ROLE_CONFIG = load_camera_role_config()
+ARUCO_ROLE_CONFIG = dict(CAMERA_ROLE_CONFIG.get("aruco", {}) or {})
+WORK_ORDER_ROLE_CONFIG = dict(CAMERA_ROLE_CONFIG.get("work_order", {}) or {})
+WORK_ORDER_OCR_CONFIG = dict(WORK_ORDER_ROLE_CONFIG.get("ocr", {}) or {})
+WORK_ORDER_INSPECTION_CONFIG = dict(
+    WORK_ORDER_ROLE_CONFIG.get("inspection", {}) or {}
+)
+YOLO_CONFIG = dict(WORK_ORDER_INSPECTION_CONFIG.get("yolo", {}) or {})
+YOLO_DATA_ROOT = (BASE_DIR.parent / str(YOLO_CONFIG.get("dataset_root", "data/part_yolo"))).resolve()
+work_order_ocr_runtime = {
+    "enabled": bool(WORK_ORDER_OCR_CONFIG.get("enabled", True)),
+    "status": "idle",
+    "last_result": None,
+    "last_error": None,
+}
+part_inspection_enabled = bool(WORK_ORDER_INSPECTION_CONFIG.get("enabled", True))
+
+
+def camera_identity(source):
+    if isinstance(source, int):
+        source = f"/dev/video{source}"
+    return os.path.realpath(str(source))
+
+
+def optional_bool_env(
+    name: str,
+    default: str,
+) -> bool | None:
+    raw = os.getenv(
+        name,
+        default,
+    ).strip().lower()
+    if raw in {
+        "",
+        "none",
+        "null",
+    }:
+        return None
+    if raw in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return True
+    if raw in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }:
+        return False
+    raise ValueError(
+        f"{name} must be true, false, or none"
+    )
+
+
+def optional_float_env(
+    name: str,
+    default: str,
+) -> float | None:
+    raw = os.getenv(
+        name,
+        default,
+    ).strip()
+    if raw.lower() in {
+        "",
+        "none",
+        "null",
+    }:
+        return None
+    return float(raw)
 
 
 # ============================================================
@@ -124,6 +214,12 @@ VISION_MODE = os.getenv(
     "VISION_MODE",
     "mock",
 ).strip().lower()
+VISION_STREAM_FPS = float(
+    os.getenv(
+        "VISION_STREAM_FPS",
+        "15",
+    )
+)
 
 if VISION_MODE == "aruco":
 
@@ -133,6 +229,12 @@ if VISION_MODE == "aruco":
     camera_index_raw = os.getenv(
         "VISION_CAMERA_INDEX"
     )
+    vision_camera_device = (
+        os.getenv(
+            "VISION_CAMERA_DEVICE"
+        )
+        or None
+    )
 
     aruco_vision = ArucoVisionAdapter(
         camera_index=(
@@ -140,16 +242,50 @@ if VISION_MODE == "aruco":
             if camera_index_raw is not None
             else None
         ),
+        camera_device=vision_camera_device,
         camera_profile=(
             os.getenv(
                 "VISION_CAMERA_PROFILE"
             )
+            or ARUCO_ROLE_CONFIG.get("profile")
             or None
+        ),
+        width=int(
+            os.getenv(
+                "VISION_CAMERA_WIDTH",
+                "1280",
+            )
+        ),
+        height=int(
+            os.getenv(
+                "VISION_CAMERA_HEIGHT",
+                "720",
+            )
+        ),
+        fps=float(
+            os.getenv(
+                "VISION_CAMERA_FPS",
+                "30",
+            )
+        ),
+        fourcc=os.getenv(
+            "VISION_CAMERA_FOURCC",
+            "MJPG",
+        ),
+        autofocus=optional_bool_env(
+            "VISION_CAMERA_AUTOFOCUS",
+            "false",
+        ),
+        focus=optional_float_env(
+            "VISION_CAMERA_FOCUS",
+            "50",
         ),
     )
 
     print(
-        "[VISION] 실제 ArUco 모드"
+        "[VISION] 실제 ArUco 모드",
+        f"source={aruco_vision.camera_source}",
+        f"capture={aruco_vision.requested_capture}",
     )
 
 else:
@@ -160,59 +296,225 @@ else:
         "[VISION] MOCK 모드"
     )
 
+aruco_camera_enabled = bool(
+    VISION_MODE == "aruco" and ARUCO_ROLE_CONFIG.get("enabled", True)
+)
+
 workflow = WorkflowController()
 material_flow = MaterialFlowController()
 
-# 작업지시서 OCR 촬영용 고정 카메라.
-# ArUco 이동부 카메라와 완전히 별도 장치로 관리한다.
+# 작업지시 OCR과 Part Inspection이 공유하는 고정 카메라.
+# ArUco 이동부 카메라와는 별도 role/config/device로 관리한다.
 WORK_ORDER_CAMERA_MODE = os.getenv(
     "WORK_ORDER_CAMERA_MODE",
-    "off",
+    (
+        "camera"
+        if WORK_ORDER_ROLE_CONFIG.get("enabled", True)
+        else "off"
+    ),
 ).strip().lower()
-
-work_order_camera = None
-
-if WORK_ORDER_CAMERA_MODE == "camera":
-    from adapters.work_order_camera_adapter import WorkOrderCameraAdapter
-
-    work_order_camera_index = int(
-        os.getenv("WORK_ORDER_CAMERA_INDEX", "0")
+WORK_ORDER_CAMERA_STREAM_FPS = float(
+    os.getenv(
+        "WORK_ORDER_CAMERA_STREAM_FPS",
+        "15",
     )
-    width_raw = os.getenv("WORK_ORDER_CAMERA_WIDTH")
-    height_raw = os.getenv("WORK_ORDER_CAMERA_HEIGHT")
+)
 
-    work_order_camera = WorkOrderCameraAdapter(
-        camera_index=work_order_camera_index,
-        width=int(width_raw) if width_raw else None,
-        height=int(height_raw) if height_raw else None,
+def create_work_order_camera(
+    *,
+    camera_index: int | None = None,
+    camera_device: str | None = None,
+    width: int | None = None,
+    height: int | None = None,
+    fps: float | None = None,
+    fourcc: str | None = None,
+) -> WorkOrderCameraAdapter:
+    work_order_camera_index_raw = os.getenv(
+        "WORK_ORDER_CAMERA_INDEX"
     )
+    configured_device = os.getenv("WORK_ORDER_CAMERA_DEVICE") or None
+    profile_name = (
+        os.getenv("WORK_ORDER_CAMERA_PROFILE")
+        or WORK_ORDER_ROLE_CONFIG.get("profile")
+        or None
+    )
+    return WorkOrderCameraAdapter(
+        camera_index=(
+            camera_index
+            if camera_index is not None
+            else int(work_order_camera_index_raw)
+            if work_order_camera_index_raw is not None
+            else None
+        ),
+        camera_device=camera_device or configured_device,
+        camera_profile=profile_name,
+        width=(
+            width
+            if width is not None
+            else
+            int(os.environ[
+                "WORK_ORDER_CAMERA_WIDTH"
+            ])
+            if "WORK_ORDER_CAMERA_WIDTH"
+            in os.environ
+            else None
+        ),
+        height=(
+            height
+            if height is not None
+            else
+            int(os.environ[
+                "WORK_ORDER_CAMERA_HEIGHT"
+            ])
+            if "WORK_ORDER_CAMERA_HEIGHT"
+            in os.environ
+            else None
+        ),
+        fps=(
+            fps
+            if fps is not None
+            else
+            float(os.environ[
+                "WORK_ORDER_CAMERA_FPS"
+            ])
+            if "WORK_ORDER_CAMERA_FPS"
+            in os.environ
+            else None
+        ),
+        fourcc=(
+            fourcc
+            if fourcc is not None
+            else
+            os.environ[
+                "WORK_ORDER_CAMERA_FOURCC"
+            ]
+            if "WORK_ORDER_CAMERA_FOURCC"
+            in os.environ
+            else None
+        ),
+    )
+
+
+work_order_camera_enabled = WORK_ORDER_CAMERA_MODE == "camera"
+work_order_camera = (
+    create_work_order_camera()
+    if work_order_camera_enabled
+    else None
+)
+
+if work_order_camera is not None:
 
     print(
         "[WORK ORDER CAMERA] 실제 카메라 모드",
-        f"index={work_order_camera_index}",
+        f"source={work_order_camera.camera_source}",
+        f"capture={work_order_camera.requested_capture}",
     )
 
-    if (
-        VISION_MODE == "aruco"
-        and getattr(aruco_vision, "camera_index", None)
-        == work_order_camera_index
+    if VISION_MODE == "aruco" and (
+        camera_identity(
+            aruco_vision.camera_source
+        )
+        == camera_identity(
+            work_order_camera.camera_source
+        )
     ):
         print(
             "[WARNING] 작업지시서 카메라와 ArUco 카메라가 "
-            "같은 index를 사용합니다. 최종 2-camera 운용에서는 "
-            "서로 다른 index를 지정하세요."
+            "같은 물리 device를 사용합니다. 최종 2-camera 운용에서는 "
+            "서로 다른 device를 지정하세요."
         )
 else:
-    print("[WORK ORDER CAMERA] OFF 모드")
+    print("[WORK ORDER / INSPECTION CAMERA] 비활성 상태 (UI에서 선택 가능)")
+
+
+@app.on_event("startup")
+def initialize_aruco_camera():
+    global aruco_camera_enabled
+    if VISION_MODE != "aruco":
+        return
+    aruco_camera_enabled = True
+
+    try:
+        status = (
+            aruco_vision.get_camera_status()
+        )
+    except Exception as error:
+        print(
+            "[VISION CAMERA WARNING] Startup camera "
+            f"initialization failed: {error}"
+        )
+        return
+
+    if status.get("connected"):
+        print(
+            "[VISION] ArUco camera initialized "
+            "during startup",
+            f"source={status.get('camera_source')}",
+        )
+        return
+
+    print(
+        "[VISION CAMERA WARNING] Startup camera "
+        "initialization did not connect; later requests "
+        "will retry",
+        f"error={status.get('last_error')}",
+    )
+
+
+@app.on_event("startup")
+def initialize_work_order_camera():
+    if work_order_camera is None:
+        return
+
+    try:
+        status = work_order_camera.get_status()
+    except Exception as error:
+        print(
+            "[WORK ORDER CAMERA WARNING] Startup camera "
+            f"initialization failed: {error}"
+        )
+        return
+
+    if status.get("connected"):
+        print(
+            "[WORK ORDER CAMERA] Camera initialized "
+            "during startup",
+            f"source={status.get('camera_source')}",
+        )
+        return
+
+    print(
+        "[WORK ORDER CAMERA WARNING] Startup camera "
+        "initialization did not connect; capture worker "
+        "will retry",
+        f"error={status.get('error')}",
+    )
+
+
+@app.on_event("shutdown")
+def close_camera_adapters():
+    close_aruco = getattr(
+        aruco_vision,
+        "close",
+        None,
+    )
+    if callable(close_aruco):
+        close_aruco()
+
+    if work_order_camera is not None:
+        work_order_camera.close()
+
+    yolo_adapter = globals().get("yolo_vision")
+    if yolo_adapter is not None:
+        yolo_adapter.close()
 
 
 # ============================================================
 # 부품 검수 / Load Cell
 # ============================================================
 #
-# 실제 카메라와 로드셀을 아직 수령하지 않은 단계에서는 두 장치 모두
-# Mock Adapter를 사용한다. 실제 하드웨어 연동 시 이 두 Adapter만 교체하고
-# InspectionService와 UI/Workflow 계약은 그대로 유지한다.
+# OpenCV Adapter는 공유 고정 카메라의 실제 frame만 Reference로 저장한다.
+# Mock은 API/UI 구조 확인용이며 실제 검증 통계에는 절대 포함하지 않는다.
 # ============================================================
 
 LOADCELL_MODE = os.getenv(
@@ -221,7 +523,6 @@ LOADCELL_MODE = os.getenv(
 ).strip().lower()
 
 if LOADCELL_MODE == "stm32":
-
     if STAGE_MODE != "stm32":
         raise RuntimeError(
             "LOADCELL_MODE=stm32 사용 시 "
@@ -239,13 +540,10 @@ if LOADCELL_MODE == "stm32":
     )
 
 elif LOADCELL_MODE == "mock":
-
     loadcell = MockLoadCellAdapter()
-
     print(
         "[LOAD CELL] MOCK 모드"
     )
-
 else:
     raise RuntimeError(
         f"지원하지 않는 LOADCELL_MODE: {LOADCELL_MODE}"
@@ -254,12 +552,8 @@ else:
 # ============================================================
 # Material Flow 실제 Gripper 계통
 # ============================================================
-#
 # Servo / Load Cell / Gripper Stepper는 같은 STM32를 사용하므로
 # 별도 Serial을 열지 않고 동일한 stage 객체를 공유한다.
-#
-# 현재 MaterialFlowExecutor는 실제 STM32 모드에서 준비하고,
-# Mock 모드는 기존 UI/MaterialFlow 흐름을 유지한다.
 # ============================================================
 
 gripper = None
@@ -267,59 +561,96 @@ gripper_stepper = None
 material_flow_executor = None
 
 if STAGE_MODE == "stm32":
-
     from adapters.stm32_gripper_adapter import STM32GripperAdapter
     from adapters.stm32_gripper_stepper_adapter import STM32GripperStepperAdapter
 
     gripper = STM32GripperAdapter(
         stage=stage,
     )
-
     gripper_stepper = STM32GripperStepperAdapter(
         stage=stage,
     )
 
     if LOADCELL_MODE == "stm32":
-
         material_flow_executor = MaterialFlowExecutor(
             material_flow=material_flow,
             stage=stage,
             gripper=gripper,
             loadcell=loadcell,
             gripper_stepper=gripper_stepper,
-
-            # ArUco 실제 보정 callback은
-            # 비전 파트 통합 시 연결한다.
             alignment_callback=None,
         )
-
         print(
-            "[MATERIAL FLOW] "
-            "STM32 Servo + LoadCell + Stepper 연결"
+            "[MATERIAL FLOW] STM32 Servo + LoadCell + Stepper 연결"
         )
-
     else:
-
         print(
-            "[MATERIAL FLOW] "
-            "LOADCELL_MODE가 mock이므로 "
+            "[MATERIAL FLOW] LOADCELL_MODE가 mock이므로 "
             "실제 Executor는 아직 비활성"
         )
 
-
 PART_INSPECTION_MODE = os.getenv(
     "PART_INSPECTION_MODE",
-    "mock",
+    str(WORK_ORDER_INSPECTION_CONFIG.get("detector", "opencv_baseline")),
 ).strip().lower()
 
-if PART_INSPECTION_MODE != "mock":
-    raise RuntimeError(
-        "현재 브랜치에는 실제 Part Inspection Adapter가 아직 없습니다. "
-        "카메라 수령 전에는 PART_INSPECTION_MODE=mock을 사용하세요."
-    )
 
-part_vision = MockPartInspectionAdapter()
-print("[PART INSPECTION] MOCK 모드")
+def read_work_order_inspection_frame(copy: bool = True):
+    """Shared C920 frame; no inspection consumer owns a VideoCapture."""
+    if work_order_camera is None or not work_order_camera_enabled:
+        return None
+    return work_order_camera.read_frame(copy=copy)
+
+
+from adapters.yolo_part_inspection_adapter import YoloModelError, YoloPartInspectionAdapter
+from services.yolo_dataset import YoloDatasetError, YoloDatasetService
+from services.yolo_training import YoloTrainingError, YoloTrainingService
+
+parts_catalog = load_parts_catalog(PARTS_CONFIG_PATH)
+yolo_vision = YoloPartInspectionAdapter(
+    frame_source=read_work_order_inspection_frame,
+    parts=parts_catalog,
+    confidence_threshold=float(YOLO_CONFIG.get("confidence_threshold", 0.25)),
+    max_inference_fps=float(YOLO_CONFIG.get("max_inference_fps", 2.0)),
+    validation_state_path=YOLO_DATA_ROOT / "state" / "validation.json",
+)
+yolo_dataset = YoloDatasetService(
+    root=YOLO_DATA_ROOT,
+    frame_source=read_work_order_inspection_frame,
+    parts=parts_catalog,
+)
+yolo_training = YoloTrainingService(
+    root=YOLO_DATA_ROOT,
+    worker_path=BASE_DIR / "yolo_train_worker.py",
+)
+
+if PART_INSPECTION_MODE == "mock":
+    part_vision = MockPartInspectionAdapter()
+    print("[PART INSPECTION] MOCK 모드")
+elif PART_INSPECTION_MODE in {"opencv", "opencv_baseline"}:
+    from adapters.opencv_part_inspection_adapter import OpenCVPartInspectionAdapter
+
+    part_vision = OpenCVPartInspectionAdapter(
+        frame_source=read_work_order_inspection_frame,
+        parts=parts_catalog,
+        state_path=PART_CLASSIFIER_PROFILE_PATH,
+        capture_root=PART_CAPTURE_ROOT,
+        roi=WORK_ORDER_INSPECTION_CONFIG.get("roi"),
+    )
+    print("[PART INSPECTION] OpenCV baseline 모드")
+elif PART_INSPECTION_MODE == "yolo":
+    part_vision = yolo_vision
+    active_model = yolo_training.active_model_path()
+    if active_model is not None:
+        try:
+            yolo_vision.load_model(active_model)
+        except Exception as error:
+            print(f"[PART INSPECTION WARNING] Active YOLO model load failed: {error}")
+    print("[PART INSPECTION] YOLO 모드")
+else:
+    raise RuntimeError(
+        "PART_INSPECTION_MODE는 mock, opencv_baseline 또는 yolo여야 합니다."
+    )
 
 inspection_service = InspectionService(
     loadcell=loadcell,
@@ -612,32 +943,181 @@ def root():
 # 작업지시서 고정 카메라 API
 # ============================================================
 
+class WorkOrderCameraSelectRequest(BaseModel):
+    enabled: bool = True
+    camera_index: int | None = None
+    camera_device: str | None = None
+    width: int | None = None
+    height: int | None = None
+    fps: float | None = None
+    fourcc: str | None = None
+
+
+class CameraEnabledRequest(BaseModel):
+    enabled: bool
+
+
+class WorkOrderFeatureEnabledRequest(BaseModel):
+    feature: str
+    enabled: bool
+
+
+def work_order_camera_resource_warning() -> str | None:
+    if (
+        VISION_MODE == "aruco"
+        and work_order_camera is not None
+        and camera_identity(aruco_vision.camera_source)
+        == camera_identity(work_order_camera.camera_source)
+    ):
+        return (
+            "ArUco / Stage Camera와 Work Order / Inspection Camera가 "
+            "같은 물리 device를 가리킵니다. 서로 다른 source를 선택하세요."
+        )
+    return None
+
+
+def disabled_work_order_camera_status() -> dict:
+    requested = (
+        dict(work_order_camera.requested_capture)
+        if work_order_camera is not None
+        else {}
+    )
+    return {
+        "connected": False,
+        "enabled": False,
+        "mode": "off",
+        "role": "work_order_inspection",
+        "camera_index": getattr(work_order_camera, "camera_index", None),
+        "camera_device": getattr(work_order_camera, "camera_device", None),
+        "camera_source": getattr(work_order_camera, "camera_source", None),
+        "requested_capture": requested,
+        "effective_capture": {},
+        "available_sources": WorkOrderCameraAdapter.discover_camera_sources(),
+        "shared_consumers": ["ocr", "part_inspection"],
+        "ocr": dict(work_order_ocr_runtime),
+        "inspection": {
+            **inspection_service.get_status()["part_vision"],
+            "enabled": part_inspection_enabled,
+        },
+        "message": "Camera not connected. UI에서 고정 카메라를 선택하고 Enable 하세요.",
+    }
+
 @app.get("/work-order-camera/status")
 def work_order_camera_status():
-    if work_order_camera is None:
-        return {
-            "connected": False,
-            "mode": "off",
-            "camera_index": None,
-            "message": (
-                "WORK_ORDER_CAMERA_MODE=camera로 실행하면 "
-                "작업지시서 고정 카메라를 사용할 수 있습니다."
-            ),
-        }
+    if work_order_camera is None or not work_order_camera_enabled:
+        return disabled_work_order_camera_status()
 
-    return work_order_camera.get_status()
+    status = work_order_camera.get_status()
+    return {
+        **status,
+        "enabled": True,
+        "role": "work_order_inspection",
+        "available_sources": WorkOrderCameraAdapter.discover_camera_sources(),
+        "shared_consumers": ["ocr", "part_inspection"],
+        "ocr": dict(work_order_ocr_runtime),
+        "inspection": {
+            **inspection_service.get_status()["part_vision"],
+            "enabled": part_inspection_enabled,
+        },
+        "resource_warning": work_order_camera_resource_warning(),
+    }
+
+
+@app.get("/work-order-camera/sources")
+def work_order_camera_sources():
+    return {
+        "success": True,
+        "sources": WorkOrderCameraAdapter.discover_camera_sources(),
+    }
+
+
+@app.post("/work-order-camera/select")
+def work_order_camera_select(request: WorkOrderCameraSelectRequest):
+    global work_order_camera, work_order_camera_enabled
+
+    try:
+        if work_order_camera is None:
+            work_order_camera = create_work_order_camera(
+                camera_index=request.camera_index,
+                camera_device=request.camera_device,
+                width=request.width,
+                height=request.height,
+                fps=request.fps,
+                fourcc=request.fourcc,
+            )
+            work_order_camera_enabled = bool(request.enabled)
+            connected = (
+                work_order_camera.start(wait_timeout=1.0)
+                if work_order_camera_enabled
+                else False
+            )
+            result = {
+                "success": True,
+                "connected": connected,
+                "message": "Work Order / Inspection Camera 설정을 적용했습니다.",
+            }
+        else:
+            result = work_order_camera.select_camera(
+                camera_index=request.camera_index,
+                camera_device=request.camera_device,
+                width=request.width,
+                height=request.height,
+                fps=request.fps,
+                fourcc=request.fourcc,
+            )
+            work_order_camera_enabled = bool(request.enabled)
+            if not work_order_camera_enabled:
+                work_order_camera.close()
+                result["connected"] = False
+        result["enabled"] = work_order_camera_enabled
+        result["resource_warning"] = work_order_camera_resource_warning()
+        return result
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.post("/work-order-camera/enabled")
+def set_work_order_camera_enabled(request: CameraEnabledRequest):
+    global work_order_camera, work_order_camera_enabled
+
+    if request.enabled and work_order_camera is None:
+        work_order_camera = create_work_order_camera()
+    work_order_camera_enabled = bool(request.enabled)
+    if work_order_camera is not None:
+        if work_order_camera_enabled:
+            work_order_camera.start(wait_timeout=1.0)
+        else:
+            work_order_camera.close()
+    return work_order_camera_status()
+
+
+@app.post("/work-order-camera/feature-enabled")
+def set_work_order_feature_enabled(request: WorkOrderFeatureEnabledRequest):
+    global part_inspection_enabled
+    feature = request.feature.strip().lower()
+    if feature == "ocr":
+        work_order_ocr_runtime["enabled"] = bool(request.enabled)
+    elif feature in {"inspection", "part_inspection"}:
+        part_inspection_enabled = bool(request.enabled)
+    else:
+        raise HTTPException(status_code=400, detail=f"지원하지 않는 feature입니다: {feature}")
+    return work_order_camera_status()
 
 
 @app.get("/work-order-camera/stream")
 def work_order_camera_stream():
-    if work_order_camera is None:
+    if work_order_camera is None or not work_order_camera_enabled:
         raise HTTPException(
             status_code=503,
             detail="작업지시서 카메라가 비활성화되어 있습니다.",
         )
 
     return StreamingResponse(
-        work_order_camera.iter_mjpeg(),
+        work_order_camera.iter_mjpeg(
+            max_fps=(
+                WORK_ORDER_CAMERA_STREAM_FPS
+            ),
+        ),
         media_type="multipart/x-mixed-replace; boundary=frame",
         headers={
             "Cache-Control": "no-store, no-cache, must-revalidate",
@@ -647,7 +1127,7 @@ def work_order_camera_stream():
 
 @app.get("/work-order-camera/snapshot")
 def work_order_camera_snapshot():
-    if work_order_camera is None:
+    if work_order_camera is None or not work_order_camera_enabled:
         raise HTTPException(
             status_code=503,
             detail="작업지시서 카메라가 비활성화되어 있습니다.",
@@ -698,6 +1178,16 @@ async def analyze_work_order(
     file: UploadFile = File(...),
     analysis_id: str = Form(...),
 ):
+    if not work_order_ocr_runtime["enabled"]:
+        return {
+            "success": False,
+            "message": "Work Order OCR가 비활성화되어 있습니다.",
+        }
+
+    work_order_ocr_runtime.update(
+        status="running",
+        last_error=None,
+    )
 
     save_path = (
         UPLOAD_DIR
@@ -755,6 +1245,7 @@ async def analyze_work_order(
             done=True,
             error=message,
         )
+        work_order_ocr_runtime.update(status="error", last_error=message)
 
         return {
             "success": False,
@@ -796,6 +1287,7 @@ async def analyze_work_order(
             done=True,
             error=message,
         )
+        work_order_ocr_runtime.update(status="error", last_error=message)
 
         return {
             "success": False,
@@ -821,6 +1313,7 @@ async def analyze_work_order(
             done=True,
             error=message,
         )
+        work_order_ocr_runtime.update(status="error", last_error=message)
 
         return {
             "success": False,
@@ -921,6 +1414,14 @@ async def analyze_work_order(
         6,
         "재고 확인 완료",
         done=True,
+    )
+    work_order_ocr_runtime.update(
+        status="complete",
+        last_error=None,
+        last_result={
+            "item_count": len(analysis_data.get("items", [])),
+            "all_ok": bool(analysis_data.get("all_ok")),
+        },
     )
 
     return {
@@ -1148,16 +1649,52 @@ class CameraSelectRequest(
 
 @app.get("/vision/status")
 def vision_status():
+    if VISION_MODE != "aruco":
+        return {
+            **aruco_vision.get_camera_status(),
+            "enabled": False,
+            "role": "aruco_stage",
+        }
+    if not aruco_camera_enabled:
+        return {
+            "connected": False,
+            "enabled": False,
+            "mode": "aruco",
+            "role": "aruco_stage",
+            "camera_index": getattr(aruco_vision, "camera_index", None),
+            "camera_device": getattr(aruco_vision, "camera_device", None),
+            "message": "ArUco / Stage Camera가 비활성화되어 있습니다.",
+        }
+    return {
+        **aruco_vision.get_camera_status(),
+        "enabled": True,
+        "role": "aruco_stage",
+    }
 
-    return (
-        aruco_vision.get_camera_status()
-    )
+
+@app.post("/vision/camera/enabled")
+def set_aruco_camera_enabled(request: CameraEnabledRequest):
+    global aruco_camera_enabled
+    if VISION_MODE != "aruco" or not hasattr(aruco_vision, "start"):
+        raise HTTPException(
+            status_code=503,
+            detail="VISION_MODE=aruco에서만 ArUco camera Enable을 변경할 수 있습니다.",
+        )
+    aruco_camera_enabled = bool(request.enabled)
+    if aruco_camera_enabled:
+        aruco_vision.start(wait_timeout=1.0)
+    else:
+        aruco_vision.close()
+    return vision_status()
 
 
 @app.get("/vision/stream")
 def vision_stream(
     annotate: bool = True,
 ):
+
+    if not aruco_camera_enabled:
+        raise HTTPException(status_code=503, detail="ArUco / Stage Camera가 비활성화되어 있습니다.")
 
     if not hasattr(
         aruco_vision,
@@ -1174,6 +1711,7 @@ def vision_stream(
     return StreamingResponse(
         aruco_vision.iter_mjpeg(
             annotate=annotate,
+            max_fps=VISION_STREAM_FPS,
         ),
         media_type=(
             "multipart/x-mixed-replace; "
@@ -1250,6 +1788,7 @@ def vision_camera_select(
     request:
         CameraSelectRequest
 ):
+    global aruco_camera_enabled
 
     if not hasattr(
         aruco_vision,
@@ -1264,14 +1803,37 @@ def vision_camera_select(
         )
 
     try:
-        return (
-            aruco_vision.select_camera(
-                profile_name=
-                    request.profile_name,
-                camera_index=
-                    request.camera_index,
-            )
+        result = aruco_vision.select_camera(
+            profile_name=
+                request.profile_name,
+            camera_index=
+                request.camera_index,
         )
+        aruco_camera_enabled = True
+
+        if (
+            work_order_camera is not None
+            and camera_identity(
+                aruco_vision.camera_source
+            )
+            == camera_identity(
+                work_order_camera.camera_source
+            )
+        ):
+            warning = (
+                "ArUco / Stage Camera와 Work Order / Inspection Camera가 "
+                "같은 물리 device를 사용합니다. 역할별로 서로 다른 "
+                "device를 선택하거나 한쪽 Camera를 Disable 하세요."
+            )
+            print(
+                "[WARNING]",
+                warning,
+            )
+            result[
+                "resource_warning"
+            ] = warning
+
+        return result
     except (
         ValueError,
         FileNotFoundError,
@@ -1377,8 +1939,50 @@ def vision_calibration_run():
 
 
 class InspectionRunRequest(BaseModel):
-    part_no: str
+    part_no: str | None = None
+    class_key: str | None = None
     expected_quantity: int
+
+
+class InspectionDebugRequest(BaseModel):
+    action: str
+    class_key: str | None = None
+    condition: dict | None = None
+
+
+class YoloCaptureRequest(BaseModel):
+    suggested_class_key: str | None = None
+    capture_group: str | None = None
+    auto_label: bool = False
+
+
+class YoloAnnotationRequest(BaseModel):
+    boxes: list[dict] = Field(default_factory=list)
+    state: str = "MANUAL"
+
+
+class YoloSplitRequest(BaseModel):
+    train_ratio: float = 0.8
+    seed: int = 42
+
+
+class YoloTrainingRequest(BaseModel):
+    base_model_id: str
+    epochs: int = 50
+    image_size: int = 640
+    batch: int = 4
+
+
+class YoloModelActivateRequest(BaseModel):
+    model_id: str
+
+
+class YoloConfidenceRequest(BaseModel):
+    confidence_threshold: float
+
+
+class YoloClassificationTestRequest(BaseModel):
+    ground_truth_class_key: str
 
 
 @app.get("/loadcell/status")
@@ -1394,6 +1998,249 @@ def loadcell_tare():
 @app.get("/inspection/status")
 def inspection_status():
     return inspection_service.get_status()
+
+
+@app.get("/inspection/debug/status")
+def inspection_debug_status():
+    result = inspection_service.get_debug_status()
+    result["inspection"] = {
+        **result["inspection"],
+        "enabled": part_inspection_enabled,
+    }
+    return result
+
+
+@app.post("/inspection/debug/run")
+def inspection_debug_run(request: InspectionDebugRequest):
+    if not part_inspection_enabled:
+        return {
+            "success": False,
+            "status": "error",
+            "error": "PART_INSPECTION_DISABLED",
+            "message": "Part Inspection이 비활성화되어 있습니다.",
+        }
+    return inspection_service.debug_action(
+        action=request.action,
+        class_key=request.class_key,
+        condition=request.condition,
+    )
+
+
+@app.get("/inspection/debug/snapshot")
+def inspection_debug_snapshot():
+    jpeg = inspection_service.get_debug_jpeg()
+    if jpeg is None:
+        raise HTTPException(
+            status_code=404,
+            detail="아직 표시할 실제 분류 debug frame이 없습니다.",
+        )
+    return Response(
+        content=jpeg,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+# ============================================================
+# YOLO UI workflow (real C920 frame only; no Mock data)
+# ============================================================
+
+@app.get("/inspection/yolo/status")
+def yolo_status():
+    return {
+        "success": True,
+        "part_inspection_mode": PART_INSPECTION_MODE,
+        "classes": [
+            {
+                "class_id": int(config["yolo_class_id"]),
+                "class_key": key,
+                "display_name": config["display_name"],
+            }
+            for key, config in sorted(parts_catalog.items(), key=lambda item: int(item[1]["yolo_class_id"]))
+        ],
+        "dataset": yolo_dataset.validate(),
+        "split": yolo_dataset.split_status(),
+        "training": yolo_training.status(),
+        "base_models": yolo_training.available_base_models(),
+        "models": yolo_training.list_models(),
+        "inference": yolo_vision.get_status(),
+        "runtime": {"device": "cpu", "cuda_available": False, "external_training_recommended": True},
+    }
+
+
+@app.get("/inspection/yolo/images")
+def yolo_images():
+    return {"success": True, "images": yolo_dataset.list_images()}
+
+
+@app.get("/inspection/yolo/images/{image_id}")
+def yolo_image(image_id: str):
+    try:
+        return FileResponse(yolo_dataset.image_path(image_id), media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+    except YoloDatasetError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@app.post("/inspection/yolo/capture")
+def yolo_capture(request: YoloCaptureRequest):
+    if work_order_camera is None or not work_order_camera_enabled:
+        raise HTTPException(status_code=503, detail="Camera not connected")
+    try:
+        item = yolo_dataset.capture(
+            suggested_class_key=request.suggested_class_key,
+            capture_group=request.capture_group,
+        )
+        auto_result = None
+        if request.auto_label:
+            frame = cv2.imread(str(yolo_dataset.image_path(item["image_id"])))
+            auto_result = yolo_vision.auto_label(frame)
+            if auto_result.get("success") and auto_result.get("detections"):
+                item = yolo_dataset.save_annotation(
+                    item["image_id"],
+                    boxes=[{"class_key": value["class_key"], **value["bbox"], "confidence": value["confidence"]} for value in auto_result["detections"]],
+                    state="AUTO_UNREVIEWED",
+                )
+        return {"success": True, "image": item, "auto_label": auto_result}
+    except YoloDatasetError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.put("/inspection/yolo/images/{image_id}/annotation")
+def yolo_save_annotation(image_id: str, request: YoloAnnotationRequest):
+    try:
+        return {"success": True, "image": yolo_dataset.save_annotation(image_id, boxes=request.boxes, state=request.state)}
+    except YoloDatasetError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.delete("/inspection/yolo/images/{image_id}")
+def yolo_delete_image(image_id: str):
+    try:
+        yolo_dataset.delete(image_id)
+        return {"success": True}
+    except YoloDatasetError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@app.post("/inspection/yolo/images/{image_id}/auto-label")
+def yolo_auto_label(image_id: str):
+    try:
+        frame = cv2.imread(str(yolo_dataset.image_path(image_id)))
+        result = yolo_vision.auto_label(frame)
+        if not result.get("success"):
+            return result
+        if not result.get("detections"):
+            return {**result, "status": "manual_label_required", "message": "No Detection — MANUAL LABEL REQUIRED"}
+        item = yolo_dataset.save_annotation(
+            image_id,
+            boxes=[{"class_key": value["class_key"], **value["bbox"], "confidence": value["confidence"]} for value in result["detections"]],
+            state="AUTO_UNREVIEWED",
+        )
+        return {**result, "image": item, "message": "Prediction 후보입니다. 검토 후 REVIEWED로 저장하세요."}
+    except YoloDatasetError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.post("/inspection/yolo/validate")
+def yolo_validate():
+    return yolo_dataset.validate(force=True)
+
+
+@app.post("/inspection/yolo/split")
+def yolo_split(request: YoloSplitRequest):
+    try:
+        return yolo_dataset.create_split(train_ratio=request.train_ratio, seed=request.seed)
+    except YoloDatasetError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.post("/inspection/yolo/export")
+def yolo_export():
+    try:
+        path = yolo_dataset.export_zip()
+        return {"success": True, "download_url": "/inspection/yolo/export/download", "file_name": path.name}
+    except YoloDatasetError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.get("/inspection/yolo/export/download")
+def yolo_export_download():
+    path = YOLO_DATA_ROOT / "exports" / "part_yolo_dataset.zip"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Dataset ZIP을 먼저 생성하세요.")
+    return FileResponse(path, media_type="application/zip", filename=path.name)
+
+
+@app.post("/inspection/yolo/training/start")
+def yolo_training_start(request: YoloTrainingRequest):
+    split = yolo_dataset.split_status()
+    try:
+        return yolo_training.start(
+            dataset_yaml=split.get("dataset_yaml") or "",
+            base_model_id=request.base_model_id,
+            epochs=request.epochs,
+            image_size=request.image_size,
+            batch=request.batch,
+        )
+    except YoloTrainingError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.get("/inspection/yolo/training/status")
+def yolo_training_status():
+    return yolo_training.status()
+
+
+@app.post("/inspection/yolo/models/import")
+async def yolo_model_import(file: UploadFile = File(...)):
+    if not str(file.filename or "").lower().endswith(".pt"):
+        raise HTTPException(status_code=400, detail=".pt 모델 파일만 Import할 수 있습니다.")
+    temporary = UPLOAD_DIR / f"yolo_model_{uuid.uuid4().hex}.pt"
+    try:
+        with temporary.open("wb") as handle:
+            shutil.copyfileobj(file.file, handle)
+        return yolo_training.import_model(temporary, str(file.filename), yolo_vision)
+    except (YoloModelError, YoloTrainingError) as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    finally:
+        if temporary.is_file():
+            temporary.unlink()
+
+
+@app.post("/inspection/yolo/models/activate")
+def yolo_model_activate(request: YoloModelActivateRequest):
+    try:
+        return yolo_training.activate(request.model_id, yolo_vision)
+    except (YoloModelError, YoloTrainingError) as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.post("/inspection/yolo/confidence")
+def yolo_confidence(request: YoloConfidenceRequest):
+    return {"success": True, "confidence_threshold": yolo_vision.set_confidence_threshold(request.confidence_threshold)}
+
+
+@app.get("/inspection/yolo/live")
+def yolo_live():
+    return yolo_vision.latest_result()
+
+
+@app.get("/inspection/yolo/live/snapshot")
+def yolo_live_snapshot():
+    jpeg = yolo_vision.get_debug_jpeg()
+    if jpeg is None:
+        raise HTTPException(status_code=404, detail="YOLO MODEL NOT READY 또는 아직 추론 frame이 없습니다.")
+    return Response(content=jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+@app.post("/inspection/yolo/classification-test")
+def yolo_classification_test(request: YoloClassificationTestRequest):
+    if PART_INSPECTION_MODE == "mock":
+        raise HTTPException(status_code=400, detail="Mock 결과는 YOLO 실물 검증 통계에 포함할 수 없습니다.")
+    try:
+        return yolo_vision.record_classification_test(request.ground_truth_class_key)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 @app.get("/parts/config")
@@ -1412,8 +2259,18 @@ def inspection_reload_config():
 
 @app.post("/inspection/run")
 def inspection_run(request: InspectionRunRequest):
+    if not part_inspection_enabled:
+        return {
+            "success": False,
+            "passed": False,
+            "matched": False,
+            "status": "error",
+            "error": "PART_INSPECTION_DISABLED",
+            "message": "Part Inspection이 비활성화되어 있습니다.",
+        }
     return inspection_service.run(
         part_no=request.part_no,
+        class_key=request.class_key,
         expected_quantity=request.expected_quantity,
     )
 
@@ -1430,6 +2287,15 @@ def vision_count(
     during the transition because the response retains matched and
     detected_quantity fields.
     """
+    if not part_inspection_enabled:
+        return {
+            "success": False,
+            "passed": False,
+            "matched": False,
+            "status": "error",
+            "error": "PART_INSPECTION_DISABLED",
+            "message": "Part Inspection이 비활성화되어 있습니다.",
+        }
     return inspection_service.run(
         part_no=request.part_no,
         expected_quantity=request.expected_quantity,
@@ -1440,6 +2306,14 @@ def vision_count(
 def vision_aruco(
     expected_tray_id: int | None = None,
 ):
+
+    if VISION_MODE == "aruco" and not aruco_camera_enabled:
+        return {
+            "success": False,
+            "detected": False,
+            "camera_connected": False,
+            "error": "ARUCO_CAMERA_DISABLED",
+        }
 
     return (
         aruco_vision.detect_tray_aruco(
@@ -1769,12 +2643,10 @@ def material_flow_execute_supply():
 
     try:
         return material_flow_executor.supply_current_tray()
-
     except Exception as error:
         return {
             "success": False,
-            "message":
-                f"Tray 공급 실행 중 오류: {error}",
+            "message": f"Tray 공급 실행 중 오류: {error}",
         }
 
 
@@ -1796,12 +2668,10 @@ def material_flow_execute_return(
         return material_flow_executor.return_current_tray(
             tray_id
         )
-
     except Exception as error:
         return {
             "success": False,
-            "message":
-                f"Tray 반납 실행 중 오류: {error}",
+            "message": f"Tray 반납 실행 중 오류: {error}",
         }
 
 

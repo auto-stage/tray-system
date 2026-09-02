@@ -8,8 +8,9 @@ class PartInspectionAdapter(ABC):
     """Visual part-inspection interface.
 
     The real implementation may use OpenCV measurement, YOLO, or a hybrid.
-    Quantity is deliberately NOT the primary responsibility of this adapter;
-    the load cell is the primary piece-count source.
+    Real and Mock implementations return the same class/count/status contract.
+    A detector may initially support only single-object validation; it must
+    report that capability instead of presenting Mock counting as real.
     """
 
     @abstractmethod
@@ -20,7 +21,8 @@ class PartInspectionAdapter(ABC):
     def inspect(
         self,
         *,
-        part_no: str,
+        class_key: str,
         part_config: dict[str, Any],
+        expected_count: int | None = None,
     ) -> dict[str, Any]:
         raise NotImplementedError

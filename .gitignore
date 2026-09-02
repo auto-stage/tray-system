@@ -51,3 +51,7 @@ __pycache__/
 *.pyc
 
 backend/data/inventory_transactions.json
+backend/data/part_classifier_profile.json
+
+# Local YOLO datasets, runs, imported weights, exports, and caches
+/data/part_yolo/

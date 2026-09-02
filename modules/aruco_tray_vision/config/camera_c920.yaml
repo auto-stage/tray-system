@@ -1,0 +1,17 @@
+calibrated: false
+camera_name: Logitech HD Pro Webcam C920
+camera_device: /dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_72F33E5F-video-index0
+camera_index_hint: 2
+capture:
+  width: 1920
+  height: 1080
+  fps: 30
+  fourcc: MJPG
+  autofocus: true
+  focus_absolute: null
+  undistort: true
+image_width: 1920
+image_height: 1080
+rms_reprojection_error: null
+camera_matrix: null
+distortion_coefficients: null
