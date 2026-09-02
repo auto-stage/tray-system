@@ -32,11 +32,54 @@ class STM32GripperStepperAdapter:
 
         return None
 
+    def stop(self) -> dict[str, Any]:
+        """
+        Gripper 전후진 Stepper만 HARD STOP한다.
+        전체 X/Z/G 정지는 stage.stop() 또는 emergency_stop() 사용.
+        """
+        connection_error = self._ensure_connected()
+        if connection_error:
+            return connection_error
+
+        result = self.stage._send_expect(
+            "GRIPPER STOP",
+            success="OK GRIPPER STOP",
+            timeout=2.0,
+        )
+
+        if not result.get("success"):
+            return {
+                "success": False,
+                "message": result.get(
+                    "message",
+                    "GRIPPER STOP 실패",
+                ),
+                "received": result.get(
+                    "received",
+                    [],
+                ),
+            }
+
+        return {
+            "success": True,
+            "message": result.get(
+                "message",
+                "OK GRIPPER STOP",
+            ),
+        }
+
     def _wait_until_idle(self, timeout: float = 15.0) -> dict[str, Any]:
         deadline = time.monotonic() + timeout
         last_message = ""
 
         while time.monotonic() < deadline:
+            if self.stage._stop_event.is_set():
+                return {
+                    "success": False,
+                    "cancelled": True,
+                    "message": "GRIPPER 이동이 STOP으로 중단되었습니다.",
+                }
+
             result = self.stage._send_expect(
                 "GRIPPER STATUS",
                 success="GRIPPER STATUS",
@@ -54,6 +97,13 @@ class STM32GripperStepperAdapter:
             last_message = message
 
             if message.startswith("GRIPPER STATUS IDLE"):
+                if self.stage._stop_event.is_set():
+                    return {
+                        "success": False,
+                        "cancelled": True,
+                        "message": "GRIPPER 이동이 STOP으로 중단되었습니다.",
+                    }
+
                 return {
                     "success": True,
                     "message": message,
@@ -67,13 +117,25 @@ class STM32GripperStepperAdapter:
 
             time.sleep(0.05)
 
+        stop_result = self.stop()
+
         return {
             "success": False,
+            "timeout": True,
             "message": f"GRIPPER 이동 완료 대기 TIMEOUT: {last_message}",
+            "stop_result": stop_result,
         }
 
     def _move(self, action: str) -> dict[str, Any]:
         action = action.strip().upper()
+
+        if self.stage._stop_event.is_set():
+            return {
+                "success": False,
+                "cancelled": True,
+                "action": action,
+                "message": "STOP 상태이므로 Gripper 이동을 시작하지 않습니다.",
+            }
 
         connection_error = self._ensure_connected()
         if connection_error:

@@ -80,14 +80,63 @@ class MaterialFlowExecutor:
         else:
             message = str(result)
 
-        return {
+        response = {
             "success": False,
             "step": step,
             "message": message,
             "result": result,
         }
 
+        if isinstance(result, dict):
+            if result.get("cancelled"):
+                response["cancelled"] = True
+
+            if result.get("timeout"):
+                response["timeout"] = True
+
+        return response
+
+    def _stop_requested(self) -> bool:
+        """
+        전체 Stage HARD STOP / ESTOP 요청 여부를 확인한다.
+
+        Mock 등 _stop_event가 없는 Stage도 고려한다.
+        """
+        event = getattr(
+            self.stage,
+            "_stop_event",
+            None,
+        )
+
+        return bool(
+            event is not None
+            and event.is_set()
+        )
+
+    def _cancelled(
+        self,
+        step: str,
+        history: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "success": False,
+            "cancelled": True,
+            "step": step,
+            "message":
+                "HARD STOP/ESTOP으로 Material Flow가 중단되었습니다.",
+            "history":
+                history if history is not None else [],
+        }
+
     def _extend(self) -> dict[str, Any]:
+
+        if self._stop_requested():
+            return {
+                "success": False,
+                "cancelled": True,
+                "message":
+                    "STOP 상태이므로 EXTEND를 실행하지 않습니다.",
+            }
 
         if self.gripper_stepper is None:
             return {
@@ -106,6 +155,14 @@ class MaterialFlowExecutor:
         return result
 
     def _retract(self) -> dict[str, Any]:
+
+        if self._stop_requested():
+            return {
+                "success": False,
+                "cancelled": True,
+                "message":
+                    "STOP 상태이므로 RETRACT를 실행하지 않습니다.",
+            }
 
         if self.gripper_stepper is None:
             return {
@@ -128,6 +185,14 @@ class MaterialFlowExecutor:
         tray_id: int,
     ) -> dict[str, Any]:
 
+        if self._stop_requested():
+            return {
+                "success": False,
+                "cancelled": True,
+                "message":
+                    "STOP 상태이므로 ArUco 정렬을 실행하지 않습니다.",
+            }
+
         if self.alignment_callback is None:
             return {
                 "success": True,
@@ -139,7 +204,7 @@ class MaterialFlowExecutor:
             tray_id
         )
 
-    def _retry_pick_once(
+    def _retry_supply_pick_once(
         self,
         tray_id: int,
     ) -> dict[str, Any]:
@@ -157,6 +222,12 @@ class MaterialFlowExecutor:
         """
 
         history: list[dict[str, Any]] = []
+
+        if self._stop_requested():
+            return self._cancelled(
+                "BEFORE_GRIP_OPEN",
+                history,
+            )
 
         result = self.gripper.open()
         history.append({
@@ -228,6 +299,12 @@ class MaterialFlowExecutor:
                 "history": history,
             }
 
+        if self._stop_requested():
+            return self._cancelled(
+                "BEFORE_GRIP_CLOSE",
+                history,
+            )
+
         result = self.gripper.close()
         history.append({
             "step": "PICK_RETRY_CLOSE",
@@ -246,6 +323,12 @@ class MaterialFlowExecutor:
             }
 
         time.sleep(self.grip_settle_sec)
+
+        if self._stop_requested():
+            return self._cancelled(
+                "BEFORE_LOAD_VERIFY_PICK",
+                history,
+            )
 
         load_result = self.loadcell.tray_present(
             threshold_g=self.tray_present_threshold_g,
@@ -290,6 +373,148 @@ class MaterialFlowExecutor:
             "history": history,
         }
 
+    def _retry_return_pick_once(
+        self,
+    ) -> dict[str, Any]:
+        """
+        Handoff에서 반환 Tray 파지 실패 시 1회 재시도한다.
+
+        OPEN
+        -> RETRACT
+        -> EXTEND
+        -> CLOSE
+        -> Load Cell 재확인
+
+        Handoff 파지이므로 ArUco 재정렬은 수행하지 않는다.
+        """
+
+        history: list[dict[str, Any]] = []
+
+        if self._stop_requested():
+            return self._cancelled(
+                "BEFORE_RETURN_RETRY_OPEN",
+                history,
+            )
+
+        result = self.gripper.open()
+
+        history.append({
+            "step": "RETURN_PICK_RETRY_OPEN",
+            "result": result,
+        })
+
+        if not result.get("success"):
+            failure = self._failed(
+                "RETURN_PICK_RETRY_OPEN",
+                result,
+            )
+            failure["history"] = history
+            return failure
+
+        time.sleep(self.grip_settle_sec)
+
+        result = self._retract()
+
+        history.append({
+            "step": "RETURN_PICK_RETRY_RETRACT",
+            "result": result,
+        })
+
+        if not result.get("success"):
+            failure = self._failed(
+                "RETURN_PICK_RETRY_RETRACT",
+                result,
+            )
+            failure["history"] = history
+            return failure
+
+        result = self._extend()
+
+        history.append({
+            "step": "RETURN_PICK_RETRY_EXTEND",
+            "result": result,
+        })
+
+        if not result.get("success"):
+            failure = self._failed(
+                "RETURN_PICK_RETRY_EXTEND",
+                result,
+            )
+            failure["history"] = history
+            return failure
+
+        if self._stop_requested():
+            return self._cancelled(
+                "BEFORE_RETURN_RETRY_CLOSE",
+                history,
+            )
+
+        result = self.gripper.close()
+
+        history.append({
+            "step": "RETURN_PICK_RETRY_CLOSE",
+            "result": result,
+        })
+
+        if not result.get("success"):
+            failure = self._failed(
+                "RETURN_PICK_RETRY_CLOSE",
+                result,
+            )
+            failure["history"] = history
+            return failure
+
+        time.sleep(self.grip_settle_sec)
+
+        if self._stop_requested():
+            return self._cancelled(
+                "BEFORE_RETURN_RETRY_LOAD_VERIFY",
+                history,
+            )
+
+        load_result = self.loadcell.tray_present(
+            threshold_g=self.tray_present_threshold_g,
+            samples=self.loadcell_samples,
+        )
+
+        history.append({
+            "step": "RETURN_PICK_RETRY_LOAD_VERIFY",
+            "result": load_result,
+        })
+
+        if not load_result.get("success"):
+            return {
+                "success": False,
+                "step": "RETURN_PICK_RETRY_LOAD_VERIFY",
+                "message": load_result.get(
+                    "message",
+                    "반환 Tray PICK 재시도 Load Cell 측정 실패",
+                ),
+                "loadcell": load_result,
+                "history": history,
+            }
+
+        if not load_result.get(
+            "tray_present",
+            False,
+        ):
+            return {
+                "success": False,
+                "step": "RETURN_PICK_FAILED",
+                "message": (
+                    "반환 Tray 파지 재시도 후에도 "
+                    "하중이 확인되지 않았습니다."
+                ),
+                "loadcell": load_result,
+                "history": history,
+            }
+
+        return {
+            "success": True,
+            "loadcell": load_result,
+            "history": history,
+        }
+
     def _recheck_release_once(
         self,
     ) -> dict[str, Any]:
@@ -301,6 +526,11 @@ class MaterialFlowExecutor:
         """
 
         time.sleep(self.grip_settle_sec)
+
+        if self._stop_requested():
+            return self._cancelled(
+                "BEFORE_LOAD_VERIFY_RELEASE",
+            )
 
         load_result = self.loadcell.tray_released(
             threshold_g=self.tray_present_threshold_g,
@@ -367,6 +597,12 @@ class MaterialFlowExecutor:
         # 1. Stage → Tray 위치
         # ----------------------------------------------------
 
+        if self._stop_requested():
+            return self._cancelled(
+                "BEFORE_MOVE_TO_TRAY",
+                history,
+            )
+
         result = self.stage.move_to_tray(
             tray_id
         )
@@ -426,6 +662,12 @@ class MaterialFlowExecutor:
         # 4. Tray 파지
         # ----------------------------------------------------
 
+        if self._stop_requested():
+            return self._cancelled(
+                "BEFORE_GRIP_CLOSE",
+                history,
+            )
+
         result = self.gripper.close()
 
         history.append({
@@ -447,6 +689,12 @@ class MaterialFlowExecutor:
         # 5. Load Cell → Tray 파지 확인
         # ----------------------------------------------------
 
+        if self._stop_requested():
+            return self._cancelled(
+                "BEFORE_LOAD_VERIFY_PICK",
+                history,
+            )
+
         load_result = self.loadcell.tray_present(
             threshold_g=self.tray_present_threshold_g,
             samples=self.loadcell_samples,
@@ -467,7 +715,7 @@ class MaterialFlowExecutor:
             "tray_present",
             False,
         ):
-            retry_result = self._retry_pick_once(
+            retry_result = self._retry_supply_pick_once(
                 tray_id
             )
 
@@ -518,6 +766,12 @@ class MaterialFlowExecutor:
         # 7. Stage → Handoff
         # ----------------------------------------------------
 
+        if self._stop_requested():
+            return self._cancelled(
+                "BEFORE_MOVE_TO_HANDOFF",
+                history,
+            )
+
         result = self.stage.move_to_handoff()
 
         history.append({
@@ -552,6 +806,12 @@ class MaterialFlowExecutor:
         # 9. Tray 해제
         # ----------------------------------------------------
 
+        if self._stop_requested():
+            return self._cancelled(
+                "BEFORE_GRIP_OPEN",
+                history,
+            )
+
         result = self.gripper.open()
 
         history.append({
@@ -572,6 +832,12 @@ class MaterialFlowExecutor:
         # ----------------------------------------------------
         # 10. Load Cell → Tray 전달 확인
         # ----------------------------------------------------
+
+        if self._stop_requested():
+            return self._cancelled(
+                "BEFORE_LOAD_VERIFY_RELEASE",
+                history,
+            )
 
         load_result = self.loadcell.tray_released(
             threshold_g=self.tray_present_threshold_g,
@@ -634,6 +900,12 @@ class MaterialFlowExecutor:
                 result,
             )
 
+        if self._stop_requested():
+            return self._cancelled(
+                "BEFORE_SUPPLY_COMPLETE",
+                history,
+            )
+
         status = (
             self.material_flow
             .supply_handoff_complete()
@@ -691,6 +963,12 @@ class MaterialFlowExecutor:
             )
 
         # 3. 파지
+        if self._stop_requested():
+            return self._cancelled(
+                "BEFORE_GRIP_CLOSE",
+                history,
+            )
+
         result = self.gripper.close()
 
         history.append({
@@ -709,6 +987,12 @@ class MaterialFlowExecutor:
         )
 
         # 4. Load Cell 파지 확인
+        if self._stop_requested():
+            return self._cancelled(
+                "BEFORE_LOAD_VERIFY_PICK",
+                history,
+            )
+
         load_result = self.loadcell.tray_present(
             threshold_g=self.tray_present_threshold_g,
             samples=self.loadcell_samples,
@@ -735,9 +1019,7 @@ class MaterialFlowExecutor:
             "tray_present",
             False,
         ):
-            retry_result = self._retry_pick_once(
-                tray_id
-            )
+            retry_result = self._retry_return_pick_once()
 
             history.extend(
                 retry_result.get(
@@ -766,6 +1048,11 @@ class MaterialFlowExecutor:
         # 5. 후진
         result = self._retract()
 
+        history.append({
+            "step": "RETURN_RETRACT",
+            "result": result,
+        })
+
         if not result.get("success"):
             return self._failed(
                 "RETURN_RETRACT",
@@ -775,6 +1062,12 @@ class MaterialFlowExecutor:
         self.material_flow.return_pick_complete()
 
         # 6. 해당 Slot으로 이동
+        if self._stop_requested():
+            return self._cancelled(
+                "BEFORE_MOVE_TO_TRAY",
+                history,
+            )
+
         result = self.stage.move_to_tray(
             tray_id
         )
@@ -795,6 +1088,11 @@ class MaterialFlowExecutor:
         # 7. 삽입 방향으로 전진
         result = self._extend()
 
+        history.append({
+            "step": "RETURN_INSERT_EXTEND",
+            "result": result,
+        })
+
         if not result.get("success"):
             return self._failed(
                 "RETURN_INSERT_EXTEND",
@@ -802,7 +1100,18 @@ class MaterialFlowExecutor:
             )
 
         # 8. Tray 해제
+        if self._stop_requested():
+            return self._cancelled(
+                "BEFORE_GRIP_OPEN",
+                history,
+            )
+
         result = self.gripper.open()
+
+        history.append({
+            "step": "RETURN_GRIP_OPEN",
+            "result": result,
+        })
 
         if not result.get("success"):
             return self._failed(
@@ -815,6 +1124,12 @@ class MaterialFlowExecutor:
         )
 
         # 9. Load Cell 해제 확인
+        if self._stop_requested():
+            return self._cancelled(
+                "BEFORE_LOAD_VERIFY_RELEASE",
+                history,
+            )
+
         load_result = self.loadcell.tray_released(
             threshold_g=self.tray_present_threshold_g,
             samples=self.loadcell_samples,
@@ -868,6 +1183,11 @@ class MaterialFlowExecutor:
         # 10. 후진
         result = self._retract()
 
+        history.append({
+            "step": "RETURN_INSERT_RETRACT",
+            "result": result,
+        })
+
         if not result.get("success"):
             return self._failed(
                 "RETURN_INSERT_RETRACT",
@@ -877,12 +1197,29 @@ class MaterialFlowExecutor:
         self.material_flow.return_insert_complete()
 
         # 11. 다시 Handoff로 복귀
+        if self._stop_requested():
+            return self._cancelled(
+                "BEFORE_MOVE_TO_HANDOFF",
+                history,
+            )
+
         result = self.stage.move_to_handoff()
+
+        history.append({
+            "step": "RETURN_TO_HANDOFF",
+            "result": result,
+        })
 
         if not result.get("success"):
             return self._failed(
                 "RETURN_TO_HANDOFF",
                 result,
+            )
+
+        if self._stop_requested():
+            return self._cancelled(
+                "BEFORE_RETURN_COMPLETE",
+                history,
             )
 
         status = (

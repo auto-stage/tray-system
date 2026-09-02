@@ -21,6 +21,7 @@ from adapters.mock_part_inspection_adapter import MockPartInspectionAdapter
 from services.inspection_service import InspectionService
 from workflow.workflow_controller import WorkflowController
 from workflow.material_flow_controller import MaterialFlowController
+from workflow.material_flow_executor import MaterialFlowExecutor
 from parts_db import find_part
 
 import asyncio
@@ -249,6 +250,62 @@ else:
     raise RuntimeError(
         f"지원하지 않는 LOADCELL_MODE: {LOADCELL_MODE}"
     )
+
+# ============================================================
+# Material Flow 실제 Gripper 계통
+# ============================================================
+#
+# Servo / Load Cell / Gripper Stepper는 같은 STM32를 사용하므로
+# 별도 Serial을 열지 않고 동일한 stage 객체를 공유한다.
+#
+# 현재 MaterialFlowExecutor는 실제 STM32 모드에서 준비하고,
+# Mock 모드는 기존 UI/MaterialFlow 흐름을 유지한다.
+# ============================================================
+
+gripper = None
+gripper_stepper = None
+material_flow_executor = None
+
+if STAGE_MODE == "stm32":
+
+    from adapters.stm32_gripper_adapter import STM32GripperAdapter
+    from adapters.stm32_gripper_stepper_adapter import STM32GripperStepperAdapter
+
+    gripper = STM32GripperAdapter(
+        stage=stage,
+    )
+
+    gripper_stepper = STM32GripperStepperAdapter(
+        stage=stage,
+    )
+
+    if LOADCELL_MODE == "stm32":
+
+        material_flow_executor = MaterialFlowExecutor(
+            material_flow=material_flow,
+            stage=stage,
+            gripper=gripper,
+            loadcell=loadcell,
+            gripper_stepper=gripper_stepper,
+
+            # ArUco 실제 보정 callback은
+            # 비전 파트 통합 시 연결한다.
+            alignment_callback=None,
+        )
+
+        print(
+            "[MATERIAL FLOW] "
+            "STM32 Servo + LoadCell + Stepper 연결"
+        )
+
+    else:
+
+        print(
+            "[MATERIAL FLOW] "
+            "LOADCELL_MODE가 mock이므로 "
+            "실제 Executor는 아직 비활성"
+        )
+
 
 PART_INSPECTION_MODE = os.getenv(
     "PART_INSPECTION_MODE",
@@ -1697,6 +1754,54 @@ def material_flow_start(
         return {
             "success": False,
             "message": str(error),
+        }
+
+
+@app.post("/material-flow/execute-supply")
+def material_flow_execute_supply():
+
+    if material_flow_executor is None:
+        return {
+            "success": False,
+            "message":
+                "실제 MaterialFlowExecutor가 활성화되어 있지 않습니다.",
+        }
+
+    try:
+        return material_flow_executor.supply_current_tray()
+
+    except Exception as error:
+        return {
+            "success": False,
+            "message":
+                f"Tray 공급 실행 중 오류: {error}",
+        }
+
+
+@app.post(
+    "/material-flow/execute-return/{tray_id}"
+)
+def material_flow_execute_return(
+    tray_id: int,
+):
+
+    if material_flow_executor is None:
+        return {
+            "success": False,
+            "message":
+                "실제 MaterialFlowExecutor가 활성화되어 있지 않습니다.",
+        }
+
+    try:
+        return material_flow_executor.return_current_tray(
+            tray_id
+        )
+
+    except Exception as error:
+        return {
+            "success": False,
+            "message":
+                f"Tray 반납 실행 중 오류: {error}",
         }
 
 

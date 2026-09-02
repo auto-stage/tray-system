@@ -833,7 +833,17 @@ class STM32StageAdapter(StageAdapter):
 
         with self._motion_lock:
 
-            self._stop_event.clear()
+            if self._stop_event.is_set():
+                return {
+                    "success": False,
+                    "cancelled": True,
+                    "message": (
+                        "STOP/ESTOP 상태입니다. "
+                        "RESET 후 다시 실행하세요."
+                    ),
+                    "status": self.refresh_status(),
+                }
+
             self.paused = False
             self.state = "HOMING"
 
@@ -1498,7 +1508,17 @@ class STM32StageAdapter(StageAdapter):
 
         with self._motion_lock:
 
-            self._stop_event.clear()
+            if self._stop_event.is_set():
+                return {
+                    "success": False,
+                    "cancelled": True,
+                    "message": (
+                        "STOP/ESTOP 상태입니다. "
+                        "RESET 후 다시 실행하세요."
+                    ),
+                    "status": self.refresh_status(),
+                }
+
             self.paused = False
 
             self.current_target = (
@@ -1567,7 +1587,17 @@ class STM32StageAdapter(StageAdapter):
         실제 STM32 프로토콜은 기존 MOVE 상대거리 명령을 그대로 사용한다.
         """
         with self._motion_lock:
-            self._stop_event.clear()
+            if self._stop_event.is_set():
+                return {
+                    "success": False,
+                    "cancelled": True,
+                    "message": (
+                        "STOP/ESTOP 상태입니다. "
+                        "RESET 후 다시 실행하세요."
+                    ),
+                    "status": self.refresh_status(),
+                }
+
             status = self.refresh_status()
 
             if not status.get("connected"):
@@ -1649,7 +1679,17 @@ class STM32StageAdapter(StageAdapter):
 
         with self._motion_lock:
 
-            self._stop_event.clear()
+            if self._stop_event.is_set():
+                return {
+                    "success": False,
+                    "cancelled": True,
+                    "message": (
+                        "STOP/ESTOP 상태입니다. "
+                        "RESET 후 다시 실행하세요."
+                    ),
+                    "status": self.refresh_status(),
+                }
+
             self.paused = False
             self.current_target = target
             self.state = "MOVING"
@@ -1826,6 +1866,10 @@ class STM32StageAdapter(StageAdapter):
             "success"
         ]:
 
+            # STOP / ESTOP cancellation latch는
+            # STM32 RESET이 실제 성공했을 때만 해제한다.
+            self._stop_event.clear()
+
             self.current_tray = None
             self.current_target = None
             self.paused = False
@@ -1849,6 +1893,11 @@ class STM32StageAdapter(StageAdapter):
             "success"
         ]:
             return result
+
+        reset_result = self.reset_error()
+
+        if not reset_result.get("success"):
+            return reset_result
 
         if use_home:
             return self.home()
