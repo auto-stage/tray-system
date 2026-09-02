@@ -2147,11 +2147,211 @@ function makeBoxes(count: number, seed: number) {
   return boxes
 }
 
+function NextTraySupplyPanel({
+  nextItem
+}: {
+  nextItem: WorkItem | null
+}) {
+  const [status, setStatus] =
+    useState<any>(null)
+
+  useEffect(() => {
+    if (!nextItem) {
+      return
+    }
+
+    let cancelled = false
+
+    const poll = async () => {
+      try {
+        const response =
+          await fetch(
+            'http://127.0.0.1:8000/material-flow/status'
+          )
+
+        if (!response.ok) {
+          return
+        }
+
+        const result =
+          await response.json()
+
+        if (
+          !cancelled &&
+          result?.success
+        ) {
+          setStatus(result.data)
+        }
+
+      } catch {
+        // 메인 작업은 계속 진행한다.
+      }
+    }
+
+    poll()
+
+    const timer =
+      setInterval(
+        poll,
+        400
+      )
+
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+
+  }, [nextItem?.tray])
+
+  if (!nextItem) {
+    return (
+      <div style={{
+        background: '#f8fafc',
+        border: '1px solid var(--hmi-border-light)',
+        padding: '9px 11px'
+      }}>
+        <div style={{
+          fontSize: 10,
+          fontWeight: 800,
+          color: '#64748b',
+          marginBottom: 3
+        }}>
+          NEXT TRAY
+        </div>
+        <div style={{
+          fontSize: 12,
+          fontWeight: 700,
+          color: '#475569'
+        }}>
+          마지막 품목입니다.
+        </div>
+      </div>
+    )
+  }
+
+  const match =
+    String(nextItem.tray)
+      .match(/\d+/)
+
+  const nextTrayId =
+    match
+      ? Number(match[0])
+      : -1
+
+  const supplied =
+    Array.isArray(
+      status?.supplied_trays
+    )
+    &&
+    status.supplied_trays
+      .map(Number)
+      .includes(nextTrayId)
+
+  const isCurrentSupply =
+    Number(
+      status?.current_supply_tray
+    ) === nextTrayId
+
+  const aborted =
+    status?.supply_state ===
+    'ABORTED'
+
+  const label =
+    aborted
+      ? 'ABORTED'
+      : supplied
+        ? 'READY'
+        : isCurrentSupply
+          ? String(
+              status?.current_step
+              ?? 'PREPARING'
+            )
+          : 'WAITING'
+
+  const message =
+    aborted
+      ? '자동 공급 중단'
+      : supplied
+        ? '현재 품목 작업 완료 대기'
+        : isCurrentSupply
+          ? String(
+              status?.current_message
+              ?? '다음 Tray 준비 중'
+            )
+          : '앞선 Tray 공급 완료 대기'
+
+  return (
+    <div style={{
+      background:
+        supplied
+          ? 'var(--hmi-green-bg)'
+          : '#eff6ff',
+      border:
+        supplied
+          ? '2px solid var(--hmi-green)'
+          : '1px solid #93c5fd',
+      padding: '9px 11px'
+    }}>
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        marginBottom: 4
+      }}>
+        <span style={{
+          fontSize: 10,
+          fontWeight: 800,
+          color: '#64748b'
+        }}>
+          NEXT TRAY
+        </span>
+
+        <span style={{
+          fontFamily: 'JetBrains Mono, monospace',
+          fontWeight: 900,
+          fontSize: 13
+        }}>
+          {nextItem.tray}
+        </span>
+
+        <span
+          className={
+            supplied
+              ? 'badge-green'
+              : aborted
+                ? 'badge-red'
+                : 'badge-blue'
+          }
+          style={{
+            marginLeft: 'auto',
+            fontSize: 9,
+            padding: '1px 6px'
+          }}
+        >
+          {label}
+        </span>
+      </div>
+
+      <div style={{
+        fontSize: 11,
+        color: '#475569'
+      }}>
+        {message}
+      </div>
+    </div>
+  )
+}
+
+
+// ============================================================
+// SCREEN: PICKING
+// ============================================================
 function PickingScreen({
-  item, itemIndex, totalItems, isPaused, showStop,
+  item, itemIndex, totalItems, nextItem, isPaused, showStop,
   onAutoVerify, onManualVerify, onPause, onStop
 }: {
   item: WorkItem; itemIndex: number; totalItems: number
+  nextItem: WorkItem | null
   isPaused: boolean; showStop: boolean
   onAutoVerify: () => void; onManualVerify: () => void
   onPause: () => void; onStop: () => void
@@ -2239,6 +2439,10 @@ function PickingScreen({
               <strong>{item.name} {item.spec}</strong>을<br />
               <span style={{ fontWeight: 800, fontSize: 15 }}>{item.qty}개</span> 피킹하세요.
             </div>
+
+            <NextTraySupplyPanel
+              nextItem={nextItem}
+            />
 
             <div style={{ flex: 1 }} />
 
@@ -2396,10 +2600,11 @@ function PickingScreen({
 // SCREEN: VERIFICATION (Load Cell 수량 + Camera 부품 검수)
 // ============================================================
 function VerificationScreen({
-  item, itemIndex, totalItems, isPaused, showStop, mode,
+  item, itemIndex, totalItems, nextItem, isPaused, showStop, mode,
   onNext, onPause, onStop, onVisionCheck
 }: {
   item: WorkItem; itemIndex: number; totalItems: number
+  nextItem: WorkItem | null
   isPaused: boolean; showStop: boolean
   mode: 'AUTO' | 'MANUAL'
   onNext: () => void
@@ -2577,6 +2782,10 @@ function VerificationScreen({
 
           {/* Result panel */}
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 12 }}>
+
+            <NextTraySupplyPanel
+              nextItem={nextItem}
+            />
             <div style={{ background: 'white', border: '1px solid var(--hmi-border)', padding: '14px 18px' }}>
               <div style={{ fontSize: 11, color: 'var(--hmi-text-muted)', marginBottom: 12, letterSpacing: '0.05em', fontWeight: 700 }}>하이브리드 검수 결과</div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
@@ -8038,25 +8247,7 @@ export default function App() {
         status.supply_complete === true
       ) {
         console.log(
-          '[MATERIAL] 모든 Tray 공급 완료. RETURN_WAIT'
-        )
-
-        void runReturnSequence().catch(
-          error => {
-            console.error(
-              '[MATERIAL] 자동 회수 실패:',
-              error
-            )
-
-            alert(
-              'Tray 자동 회수 중 오류가 발생했습니다.\n\n'
-              + (
-                error instanceof Error
-                  ? error.message
-                  : String(error)
-              )
-            )
-          }
+          '[MATERIAL] 모든 Tray 공급 완료. 최종 검수까지 Return 대기'
         )
 
         return
@@ -9098,14 +9289,32 @@ export default function App() {
       nextIndex
     )
 
-    nav('TRAY_MOVING')
-
     const nextTrayId =
       trayNumber(
         workItems[nextIndex].tray
       )
 
+    const materialStatus =
+      await requestMaterialFlowStatus()
+
+    const alreadySupplied =
+      Array.isArray(
+        materialStatus?.supplied_trays
+      )
+      &&
+      materialStatus.supplied_trays
+        .map(Number)
+        .includes(nextTrayId)
+
+    // 현재 품목 작업 중 다음 Tray가 이미 선행 조달됐다면
+    // 불필요한 TRAY_MOVING 화면을 보여주지 않는다.
+    if (!alreadySupplied) {
+      nav('TRAY_MOVING')
+    }
+
     const supplied =
+      alreadySupplied
+      ||
       await waitForTraySupplied(
         nextTrayId
       )
@@ -9177,6 +9386,26 @@ export default function App() {
     }
 
     nav('TRAY_RETURN')
+
+    // 모든 품목 피킹 및 최종 검수 PASS 후에만
+    // 실제 Tray 자동 반납을 시작한다.
+    void runReturnSequence().catch(
+      error => {
+        console.error(
+          '[MATERIAL] 최종 검수 후 자동 회수 실패:',
+          error
+        )
+
+        alert(
+          'Tray 자동 회수 중 오류가 발생했습니다.\n\n'
+          + (
+            error instanceof Error
+              ? error.message
+              : String(error)
+          )
+        )
+      }
+    )
   }
   const handleRelocationComplete = async (
     slots: RackSlots
@@ -9472,6 +9701,16 @@ export default function App() {
             item={currentItem}
             itemIndex={currentItemIndex}
             totalItems={workItems.length}
+            nextItem={
+              workItems
+                .slice(currentItemIndex + 1)
+                .find(
+                  candidate =>
+                    trayNumber(candidate.tray)
+                    !== trayNumber(currentItem.tray)
+                )
+              ?? null
+            }
             isPaused={isPaused}
             showStop={showStopConfirm}
             onAutoVerify={handlePickingAutoVerify}
@@ -9486,6 +9725,16 @@ export default function App() {
             item={currentItem}
             itemIndex={currentItemIndex}
             totalItems={workItems.length}
+            nextItem={
+              workItems
+                .slice(currentItemIndex + 1)
+                .find(
+                  candidate =>
+                    trayNumber(candidate.tray)
+                    !== trayNumber(currentItem.tray)
+                )
+              ?? null
+            }
             isPaused={isPaused}
             showStop={showStopConfirm}
             mode={verificationMode}
