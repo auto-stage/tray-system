@@ -13,6 +13,30 @@ class MockLoadCellAdapter(LoadCellAdapter):
         self._last_weight_g = 0.0
         self._stable = True
 
+    def set_mock_tray_present(
+        self,
+        present: bool,
+        *,
+        tray_weight_g: float = 500.0,
+    ) -> None:
+        """
+        Mock Gripper가 Tray 파지/해제를 흉내낼 때 사용한다.
+
+        CLOSE -> net weight 약 500g
+        OPEN  -> net weight 0g
+        """
+        if present:
+            self._last_weight_g = (
+                self._tare_offset_g
+                + float(tray_weight_g)
+            )
+        else:
+            self._last_weight_g = (
+                self._tare_offset_g
+            )
+
+        self._stable = True
+
     def get_status(self) -> dict[str, Any]:
         return {
             "connected": True,

@@ -128,6 +128,48 @@ class MaterialFlowExecutor:
                 history if history is not None else [],
         }
 
+    def _set_progress(
+        self,
+        *,
+        phase: str,
+        step: str,
+        message: str,
+        detail: dict[str, Any] | None = None,
+    ) -> None:
+        setter = getattr(
+            self.material_flow,
+            "set_progress",
+            None,
+        )
+
+        if callable(setter):
+            setter(
+                phase=phase,
+                step=step,
+                message=message,
+                detail=detail,
+            )
+
+    def _set_validation(
+        self,
+        *,
+        validation_type: str,
+        passed: bool,
+        detail: dict[str, Any] | None = None,
+    ) -> None:
+        setter = getattr(
+            self.material_flow,
+            "set_validation",
+            None,
+        )
+
+        if callable(setter):
+            setter(
+                validation_type=validation_type,
+                passed=passed,
+                detail=detail,
+            )
+
     def _extend(self) -> dict[str, Any]:
 
         if self._stop_requested():
@@ -579,6 +621,21 @@ class MaterialFlowExecutor:
         선반 → Handoff까지 운반한다.
         """
 
+        if getattr(
+            self.material_flow,
+            "supply_state",
+            None,
+        ) == "ABORTED":
+            return {
+                "success": False,
+                "cancelled": True,
+                "step": "START",
+                "message": (
+                    "Material Flow가 중단 상태입니다. "
+                    "기구 상태 확인 후 작업을 다시 시작하세요."
+                ),
+            }
+
         tray_id = (
             self.material_flow
             .get_current_supply_tray()
@@ -596,6 +653,13 @@ class MaterialFlowExecutor:
         # ----------------------------------------------------
         # 1. Stage → Tray 위치
         # ----------------------------------------------------
+
+        self._set_progress(
+            phase="SUPPLY",
+            step="MOVE_TO_TRAY",
+            message=f"TRAY {tray_id:02d} 위치로 이동 중",
+            detail={"tray_id": tray_id},
+        )
 
         if self._stop_requested():
             return self._cancelled(
@@ -624,6 +688,13 @@ class MaterialFlowExecutor:
         # 2. ArUco 정렬
         # ----------------------------------------------------
 
+        self._set_progress(
+            phase="SUPPLY",
+            step="ALIGN",
+            message="Tray 위치 보정 중",
+            detail={"tray_id": tray_id},
+        )
+
         result = self._align(
             tray_id
         )
@@ -645,6 +716,12 @@ class MaterialFlowExecutor:
         # 3. Gripper 전진
         # ----------------------------------------------------
 
+        self._set_progress(
+            phase="SUPPLY",
+            step="GRIPPER_EXTEND",
+            message="Gripper가 Tray 방향으로 전진 중",
+        )
+
         result = self._extend()
 
         history.append({
@@ -661,6 +738,12 @@ class MaterialFlowExecutor:
         # ----------------------------------------------------
         # 4. Tray 파지
         # ----------------------------------------------------
+
+        self._set_progress(
+            phase="SUPPLY",
+            step="GRIP_CLOSE",
+            message="Tray 파지 중",
+        )
 
         if self._stop_requested():
             return self._cancelled(
@@ -689,6 +772,12 @@ class MaterialFlowExecutor:
         # 5. Load Cell → Tray 파지 확인
         # ----------------------------------------------------
 
+        self._set_progress(
+            phase="SUPPLY",
+            step="LOAD_VERIFY_PICK",
+            message="Load Cell로 Tray 파지 상태 확인 중",
+        )
+
         if self._stop_requested():
             return self._cancelled(
                 "BEFORE_LOAD_VERIFY_PICK",
@@ -698,6 +787,20 @@ class MaterialFlowExecutor:
         load_result = self.loadcell.tray_present(
             threshold_g=self.tray_present_threshold_g,
             samples=self.loadcell_samples,
+        )
+
+        self._set_validation(
+            validation_type="PICK",
+            passed=bool(
+                load_result.get("success")
+                and load_result.get("tray_present")
+            ),
+            detail={
+                "average_weight_g":
+                    load_result.get("average_weight_g"),
+                "threshold_g":
+                    load_result.get("threshold_g"),
+            },
         )
 
         history.append({
@@ -715,6 +818,12 @@ class MaterialFlowExecutor:
             "tray_present",
             False,
         ):
+            self._set_progress(
+                phase="SUPPLY",
+                step="PICK_RETRY",
+                message="Tray 파지 재시도 중",
+            )
+
             retry_result = self._retry_supply_pick_once(
                 tray_id
             )
@@ -743,9 +852,40 @@ class MaterialFlowExecutor:
                     "history": history,
                 }
 
+            retry_loadcell = (
+                retry_result.get("loadcell")
+                if isinstance(
+                    retry_result.get("loadcell"),
+                    dict,
+                )
+                else {}
+            )
+
+            self._set_validation(
+                validation_type="PICK",
+                passed=True,
+                detail={
+                    "average_weight_g":
+                        retry_loadcell.get(
+                            "average_weight_g"
+                        ),
+                    "threshold_g":
+                        retry_loadcell.get(
+                            "threshold_g"
+                        ),
+                    "retry": True,
+                },
+            )
+
         # ----------------------------------------------------
         # 6. Gripper 후진
         # ----------------------------------------------------
+
+        self._set_progress(
+            phase="SUPPLY",
+            step="PICK_RETRACT",
+            message="Tray 인출 후 Gripper 후진 중",
+        )
 
         result = self._retract()
 
@@ -765,6 +905,12 @@ class MaterialFlowExecutor:
         # ----------------------------------------------------
         # 7. Stage → Handoff
         # ----------------------------------------------------
+
+        self._set_progress(
+            phase="SUPPLY",
+            step="MOVE_TO_HANDOFF",
+            message="Conveyor Handoff 위치로 이동 중",
+        )
 
         if self._stop_requested():
             return self._cancelled(
@@ -789,6 +935,12 @@ class MaterialFlowExecutor:
         # 8. Gripper 전진
         # ----------------------------------------------------
 
+        self._set_progress(
+            phase="SUPPLY",
+            step="HANDOFF_EXTEND",
+            message="Tray 전달을 위해 Gripper 전진 중",
+        )
+
         result = self._extend()
 
         history.append({
@@ -805,6 +957,12 @@ class MaterialFlowExecutor:
         # ----------------------------------------------------
         # 9. Tray 해제
         # ----------------------------------------------------
+
+        self._set_progress(
+            phase="SUPPLY",
+            step="GRIP_OPEN",
+            message="Handoff 위치에서 Tray 해제 중",
+        )
 
         if self._stop_requested():
             return self._cancelled(
@@ -833,6 +991,12 @@ class MaterialFlowExecutor:
         # 10. Load Cell → Tray 전달 확인
         # ----------------------------------------------------
 
+        self._set_progress(
+            phase="SUPPLY",
+            step="LOAD_VERIFY_RELEASE",
+            message="Load Cell로 Tray 전달 상태 확인 중",
+        )
+
         if self._stop_requested():
             return self._cancelled(
                 "BEFORE_LOAD_VERIFY_RELEASE",
@@ -842,6 +1006,20 @@ class MaterialFlowExecutor:
         load_result = self.loadcell.tray_released(
             threshold_g=self.tray_present_threshold_g,
             samples=self.loadcell_samples,
+        )
+
+        self._set_validation(
+            validation_type="RELEASE",
+            passed=bool(
+                load_result.get("success")
+                and load_result.get("tray_released")
+            ),
+            detail={
+                "average_weight_g":
+                    load_result.get("average_weight_g"),
+                "threshold_g":
+                    load_result.get("threshold_g"),
+            },
         )
 
         history.append({
@@ -883,9 +1061,40 @@ class MaterialFlowExecutor:
                     "history": history,
                 }
 
+            recheck_loadcell = (
+                recheck_result.get("loadcell")
+                if isinstance(
+                    recheck_result.get("loadcell"),
+                    dict,
+                )
+                else {}
+            )
+
+            self._set_validation(
+                validation_type="RELEASE",
+                passed=True,
+                detail={
+                    "average_weight_g":
+                        recheck_loadcell.get(
+                            "average_weight_g"
+                        ),
+                    "threshold_g":
+                        recheck_loadcell.get(
+                            "threshold_g"
+                        ),
+                    "recheck": True,
+                },
+            )
+
         # ----------------------------------------------------
         # 11. Gripper 후진
         # ----------------------------------------------------
+
+        self._set_progress(
+            phase="SUPPLY",
+            step="HANDOFF_RETRACT",
+            message="Tray 전달 완료 후 Gripper 후진 중",
+        )
 
         result = self._retract()
 
@@ -905,6 +1114,12 @@ class MaterialFlowExecutor:
                 "BEFORE_SUPPLY_COMPLETE",
                 history,
             )
+
+        self._set_progress(
+            phase="SUPPLY",
+            step="COMPLETE",
+            message=f"TRAY {tray_id:02d} 자동 조달 완료",
+        )
 
         status = (
             self.material_flow
@@ -935,6 +1150,22 @@ class MaterialFlowExecutor:
         """
 
         history: list[dict[str, Any]] = []
+
+        if getattr(
+            self.material_flow,
+            "return_state",
+            None,
+        ) == "ABORTED":
+            return {
+                "success": False,
+                "cancelled": True,
+                "step": "RETURN_START",
+                "message": (
+                    "Material Flow가 중단 상태입니다. "
+                    "기구 상태 확인 후 작업을 다시 시작하세요."
+                ),
+                "history": history,
+            }
 
         # 1. 반환 Tray ID 등록
         try:

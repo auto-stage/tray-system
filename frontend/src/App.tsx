@@ -8,7 +8,7 @@ type Screen =
   | 'MAIN' | 'CAMERA_CAPTURE' | 'ANALYZING' | 'REVIEW'
   | 'TRAY_MOVING' | 'PICKING' | 'VERIFICATION' | 'ITEM_COMPLETE'
   | 'FINAL_VERIFICATION' | 'TRAY_RETURN' | 'RELOCATION_COMPLETE'
-  | 'WORK_COMPLETE' | 'WORK_HISTORY' | 'SETTINGS' | 'EQUIPMENT_ERROR' | 'EMERGENCY_STOP'
+  | 'WORK_COMPLETE' | 'WORK_HISTORY' | 'SETTINGS' | 'EMERGENCY_STOP'
 
 // Rack slot order: [top-left, top-right, mid-left, mid-right, bot-left, bot-right]
 type RackSlots = [string, string, string, string, string, string]
@@ -125,38 +125,58 @@ function StatusBar({
   const [stageStatus, setStageStatus] =
     useState<any>(null)
 
+  const [visionStatus, setVisionStatus] =
+    useState<any>(null)
+
+  const [loadcellStatus, setLoadcellStatus] =
+    useState<any>(null)
+
   useEffect(() => {
     let cancelled = false
 
-    const pollStageStatus = async () => {
+    const fetchStatus = async (
+      endpoint: string
+    ) => {
       try {
         const response = await fetch(
-          'http://127.0.0.1:8000/stage/status'
+          `http://127.0.0.1:8000${endpoint}`
         )
 
         if (!response.ok) {
-          throw new Error(
-            `Stage status 오류: ${response.status}`
-          )
+          return null
         }
 
-        const status = await response.json()
+        return await response.json()
 
-        if (!cancelled) {
-          setStageStatus(status)
-        }
-
-      } catch (error) {
-        if (!cancelled) {
-          setStageStatus(null)
-        }
+      } catch {
+        return null
       }
     }
 
-    pollStageStatus()
+    const pollSystemStatus = async () => {
+      const [
+        stage,
+        vision,
+        loadcell,
+      ] = await Promise.all([
+        fetchStatus('/stage/status'),
+        fetchStatus('/vision/status'),
+        fetchStatus('/loadcell/status'),
+      ])
+
+      if (cancelled) {
+        return
+      }
+
+      setStageStatus(stage)
+      setVisionStatus(vision)
+      setLoadcellStatus(loadcell)
+    }
+
+    pollSystemStatus()
 
     const timer = setInterval(
-      pollStageStatus,
+      pollSystemStatus,
       1000
     )
 
@@ -201,15 +221,67 @@ function StatusBar({
           ? 'CONNECTED'
           : 'DISCONNECTED'
 
+  const visionIsMock =
+    visionStatus?.mock === true
+
+  const cameraLabel =
+    visionStatus == null
+      ? 'OFFLINE'
+      : visionIsMock
+        ? 'MOCK'
+        : visionStatus?.connected === true
+          ? 'NORMAL'
+          : 'DISCONNECTED'
+
+  const cameraOk =
+    visionStatus != null
+    &&
+    (
+      visionIsMock
+      ||
+      visionStatus?.connected === true
+    )
+
+  const loadcellIsMock =
+    loadcellStatus?.mock === true
+
+  const loadcellLabel =
+    loadcellStatus == null
+      ? 'OFFLINE'
+      : loadcellIsMock
+        ? 'MOCK'
+        : loadcellStatus?.connected === true
+          ? 'NORMAL'
+          : 'DISCONNECTED'
+
+  const loadcellOk =
+    loadcellStatus != null
+    &&
+    (
+      loadcellIsMock
+      ||
+      loadcellStatus?.connected === true
+    )
+
   const sysItems = [
-    { label: 'Camera', val: 'NORMAL', ok: true },
+    {
+      label: 'Camera',
+      val: cameraLabel,
+      ok: cameraOk,
+    },
     {
       label: 'Stage',
       val: stageLabel,
-      ok: stageStatus != null && !stageError,
+      ok:
+        stageStatus != null
+        &&
+        !stageError,
     },
-    { label: 'Database', val: 'NORMAL', ok: true },
-    { label: 'Load Cell', val: 'NORMAL', ok: true },
+    {
+      label: 'Load Cell',
+      val: loadcellLabel,
+      ok: loadcellOk,
+    },
     {
       label: 'STM32',
       val: stm32Label,
@@ -219,6 +291,7 @@ function StatusBar({
         realStageConnected,
     },
   ]
+
   return (
     <div style={{ background: 'var(--hmi-navy-dark)', borderBottom: '2px solid #1e3a5f', flexShrink: 0 }}>
       {/* Top row */}
@@ -292,7 +365,7 @@ function StatusBar({
           </div>
         ))}
         <div style={{ flex: 1 }} />
-        {screen !== 'MAIN' && screen !== 'WORK_HISTORY' && screen !== 'EQUIPMENT_ERROR' && screen !== 'EMERGENCY_STOP' && (
+        {screen !== 'MAIN' && screen !== 'WORK_HISTORY' && screen !== 'EMERGENCY_STOP' && (
           <div style={{ color: '#7a9cc4', fontSize: 11, fontFamily: 'JetBrains Mono, monospace' }}>
             WO-20260817-001
           </div>
@@ -1126,8 +1199,28 @@ function ReviewScreen({
   const [editIdx, setEditIdx] = useState<number | null>(null)
   const [hasEdited, setHasEdited] = useState(false)
 
-  const allOk = items.every(i => i.status === '정상')
-  const hasIssue = items.some(i => i.status === '확인 필요' || i.status === '재고 부족')
+  const allOk = items.every(
+    i => i.status === '정상'
+  )
+
+  const hasCheckIssue = items.some(
+    i => i.status === '확인 필요'
+  )
+
+  const hasStockShortage = items.some(
+    i => i.status === '재고 부족'
+  )
+
+  const hasIssue =
+    hasCheckIssue ||
+    hasStockShortage
+
+  const issueMessage =
+    hasCheckIssue && hasStockShortage
+      ? '확인이 필요한 항목과 재고 부족 품목이 있습니다. 문제를 해결한 후 작업을 시작해주세요.'
+      : hasStockShortage
+        ? '재고가 부족한 품목이 있습니다. 재고를 보충하거나 요청 수량을 수정한 후 작업을 시작해주세요.'
+        : '확인이 필요한 항목이 있습니다. 항목을 확인·수정한 후 작업을 시작해주세요.'
 
   useEffect(() => {
     if (!autoActive || !allOk || hasIssue || isPaused || showStopConfirm) return
@@ -1218,12 +1311,26 @@ function ReviewScreen({
         {/* Status / action area */}
         {hasIssue ? (
           <div style={{
-            background: 'var(--hmi-yellow-bg)', border: '2px solid var(--hmi-yellow-accent)',
-            padding: '14px 20px', display: 'flex', alignItems: 'center', gap: 12
+            background: hasStockShortage
+              ? 'var(--hmi-red-bg)'
+              : 'var(--hmi-yellow-bg)',
+            border: hasStockShortage
+              ? '2px solid var(--hmi-red)'
+              : '2px solid var(--hmi-yellow-accent)',
+            padding: '14px 20px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12
           }}>
             <span style={{ fontSize: 20 }}>⚠</span>
-            <span style={{ fontWeight: 700, color: 'var(--hmi-yellow)', fontSize: 14 }}>
-              확인 필요 항목을 수정해주세요. 수정 완료 전까지 작업을 시작할 수 없습니다.
+            <span style={{
+              fontWeight: 700,
+              color: hasStockShortage
+                ? 'var(--hmi-red)'
+                : 'var(--hmi-yellow)',
+              fontSize: 14
+            }}>
+              {issueMessage}
             </span>
           </div>
         ) : allOk && autoActive && !hasEdited ? (
@@ -1281,29 +1388,16 @@ function TrayMovingScreen({
   isPaused: boolean; showStop: boolean
   onArrived: () => void; onPause: () => void; onStop: () => void
 }) {
-  const stages = [
-    '대기',
-    'Tray 탐색',
-    'ArUco 확인',
-    'Tray 접근',
-    'Tray 이동',
-    '작업 위치 이동',
-    '도착'
-  ]
-
-  const [stageIdx, setStageIdx] =
-    useState(0)
-
   const [xPos, setXPos] =
     useState(0)
 
   const [zPos, setZPos] =
     useState(0)
 
-  const [arucoMatch, setArucoMatch] =
-    useState(false)
-
   const [stageStatus, setStageStatus] =
+    useState<any>(null)
+
+  const [materialFlowStatus, setMaterialFlowStatus] =
     useState<any>(null)
 
   const startPosRef =
@@ -1329,49 +1423,6 @@ function TrayMovingScreen({
       stageStatus?.current_target?.z_mm
       ?? 0
     )
-
-
-  // ------------------------------------------------------------
-  // UI 단계 표시는 기존 흐름 유지
-  // 도착 판정만 실제 Stage 상태로 처리
-  // ------------------------------------------------------------
-  useEffect(() => {
-    if (
-      isPaused ||
-      showStop ||
-      stageIdx >= 5
-    ) {
-      return
-    }
-
-    const delays = [
-      800,
-      1200,
-      1400,
-      1000,
-      1400,
-    ]
-
-    const timer =
-      setTimeout(() => {
-        const next =
-          stageIdx + 1
-
-        setStageIdx(next)
-
-        if (next >= 2) {
-          setArucoMatch(true)
-        }
-      }, delays[stageIdx] ?? 1000)
-
-    return () =>
-      clearTimeout(timer)
-
-  }, [
-    isPaused,
-    showStop,
-    stageIdx
-  ])
 
 
   // ------------------------------------------------------------
@@ -1467,96 +1518,153 @@ function TrayMovingScreen({
 
 
   // ------------------------------------------------------------
-  // 실제 도착 판정
-  //
-  // STM32StageAdapter:
-  //   이동 완료 후 current_tray 설정 + READY
-  //
-  // MockStageAdapter:
-  //   이동 완료 후 current_tray 설정 + moving=false
+  // 실제 Material Flow 진행상태 조회
   // ------------------------------------------------------------
   useEffect(() => {
-    if (
-      !stageStatus ||
-      isPaused ||
-      showStop
-    ) {
-      return
-    }
+    let cancelled = false
 
-    const currentTray =
-      Number(
-        stageStatus.current_tray
-      )
+    const pollMaterialFlow =
+      async () => {
+        try {
+          const response =
+            await fetch(
+              'http://127.0.0.1:8000/material-flow/status'
+            )
 
-    const ready =
-      stageStatus.state === 'READY'
-      ||
-      (
-        stageStatus.mock === true
-        &&
-        stageStatus.moving === false
-      )
+          if (!response.ok) {
+            return
+          }
 
-    const arrived =
-      Boolean(
-        stageStatus.current_target
-      )
-      &&
-      currentTray === targetTrayId
-      &&
-      ready
-      &&
-      !stageStatus.estop
-      &&
-      !stageStatus.estopped
+          const result =
+            await response.json()
 
-    if (
-      arrived &&
-      stageIdx !== 6
-    ) {
-      setStageIdx(6)
-    }
+          if (
+            cancelled ||
+            !result?.success
+          ) {
+            return
+          }
 
-  }, [
-    stageStatus,
-    targetTrayId,
-    isPaused,
-    showStop,
-    stageIdx
-  ])
+          setMaterialFlowStatus(
+            result.data
+          )
 
+        } catch (error) {
+          console.error(
+            '[MATERIAL] status 조회 실패:',
+            error
+          )
+        }
+      }
 
-  // ------------------------------------------------------------
-  // 실제 도착 확인 후 Workflow 다음 단계
-  // ------------------------------------------------------------
-  useEffect(() => {
-    if (
-      isPaused ||
-      showStop ||
-      stageIdx !== 6
-    ) {
-      return
-    }
+    pollMaterialFlow()
 
     const timer =
-      setTimeout(
-        () => {
-          onArrived()
-        },
-        600
+      setInterval(
+        pollMaterialFlow,
+        250
       )
 
-    return () =>
-      clearTimeout(timer)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
 
-  }, [
-    isPaused,
-    showStop,
-    stageIdx,
-    onArrived
-  ])
+  }, [])
 
+
+  const currentStep =
+    String(
+      materialFlowStatus?.current_step
+      ?? 'MOVE_TO_TRAY'
+    )
+
+  const supplyStages = [
+    'Tray 위치 이동',
+    '위치 보정',
+    'Tray 파지 및 검증',
+    'Handoff 이동',
+    'Tray 전달 및 확인',
+  ]
+
+  const supplyStageIndex = (() => {
+    if (
+      materialFlowStatus?.supply_complete
+      === true
+    ) {
+      return supplyStages.length
+    }
+
+    if (currentStep === 'MOVE_TO_TRAY') {
+      return 0
+    }
+
+    if (currentStep === 'ALIGN') {
+      return 1
+    }
+
+    if (
+      currentStep === 'GRIPPER_EXTEND'
+      ||
+      currentStep === 'GRIP_CLOSE'
+      ||
+      currentStep === 'LOAD_VERIFY_PICK'
+      ||
+      currentStep === 'PICK_RETRACT'
+      ||
+      currentStep.startsWith('PICK_RETRY')
+    ) {
+      return 2
+    }
+
+    if (
+      currentStep === 'MOVE_TO_HANDOFF'
+    ) {
+      return 3
+    }
+
+    if (
+      currentStep === 'HANDOFF_EXTEND'
+      ||
+      currentStep === 'GRIP_OPEN'
+      ||
+      currentStep === 'LOAD_VERIFY_RELEASE'
+      ||
+      currentStep === 'HANDOFF_RETRACT'
+      ||
+      currentStep === 'COMPLETE'
+    ) {
+      return 4
+    }
+
+    return 0
+  })()
+
+  const suppliedTrays =
+    Array.isArray(
+      materialFlowStatus?.supplied_trays
+    )
+      ? materialFlowStatus.supplied_trays.map(Number)
+      : []
+
+  const traySupplied =
+    suppliedTrays.includes(
+      targetTrayId
+    )
+
+  // 실제 ArUco 화면 자체는 팀원 구현 영역.
+  // 여기서는 Material Flow의 ALIGN 완료 여부만 UI 표시 판단에 사용.
+  const arucoMatch =
+    supplyStageIndex >= 2
+    || traySupplied
+
+  const lastValidation =
+    materialFlowStatus?.last_validation
+
+  const validationWeight =
+    Number(
+      lastValidation?.detail?.average_weight_g
+    )
 
   const hasStageTarget =
     Boolean(
@@ -1673,7 +1781,7 @@ function TrayMovingScreen({
         background: 'var(--hmi-navy)', color: 'white', padding: '8px 16px',
         display: 'flex', alignItems: 'center', gap: 12, borderBottom: '2px solid var(--hmi-blue-light)', flexShrink: 0
       }}>
-        <span style={{ fontWeight: 900, fontSize: 16, letterSpacing: '0.1em', fontFamily: 'JetBrains Mono, monospace' }}>TRAY MOVING</span>
+        <span style={{ fontWeight: 900, fontSize: 16, letterSpacing: '0.1em', fontFamily: 'JetBrains Mono, monospace' }}>TRAY AUTO SUPPLY</span>
         <div style={{ flex: 1 }} />
         <span style={{ fontSize: 12, color: '#93c5fd', fontFamily: 'JetBrains Mono, monospace' }}>품목 {itemIndex + 1} / {totalItems}</span>
       </div>
@@ -1693,8 +1801,8 @@ function TrayMovingScreen({
               }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <span style={{ fontWeight: 700, fontSize: 12, fontFamily: 'JetBrains Mono, monospace' }}>{t.id}</span>
-                  {t.highlight && <span className={stageIdx >= 6 ? 'badge-green' : 'badge-blue'} style={{ fontSize: 9, padding: '1px 5px' }}>
-                    {stageIdx >= 6 ? 'ARRIVED' : 'MOVING'}
+                  {t.highlight && <span className={traySupplied ? 'badge-green' : 'badge-blue'} style={{ fontSize: 9, padding: '1px 5px' }}>
+                    {traySupplied ? 'SUPPLIED' : 'MOVING'}
                   </span>}
                 </div>
                 <div style={{ fontSize: 11, color: '#374151', marginTop: 2 }}>{t.name} <span style={{ fontFamily: 'JetBrains Mono, monospace', color: '#6b7280' }}>{t.spec}</span></div>
@@ -1779,22 +1887,172 @@ function TrayMovingScreen({
               ))}
             </div>
 
-            {/* Stage steps */}
-            <div style={{ background: 'white', border: '1px solid var(--hmi-border-light)', padding: '10px 14px' }}>
-              {stages.map((s, i) => (
-                <div key={i} style={{
-                  display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0',
-                  borderBottom: i < stages.length - 1 ? '1px solid #f3f4f6' : 'none'
+            {/* Auto supply progress */}
+            <div style={{
+              background: 'white',
+              border: '1px solid var(--hmi-border-light)',
+              padding: '10px 14px'
+            }}>
+              <div style={{
+                fontSize: 11,
+                fontWeight: 700,
+                color: '#374151',
+                marginBottom: 8,
+                letterSpacing: '0.05em'
+              }}>
+                AUTO SUPPLY STATUS
+              </div>
+
+              {supplyStages.map((label, i) => {
+                const done =
+                  i < supplyStageIndex
+                  ||
+                  traySupplied
+
+                const active =
+                  !traySupplied
+                  &&
+                  i === supplyStageIndex
+
+                return (
+                  <div
+                    key={label}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      padding: '5px 0',
+                      borderBottom:
+                        i < supplyStages.length - 1
+                          ? '1px solid #f3f4f6'
+                          : 'none'
+                    }}
+                  >
+                    <span style={{
+                      width: 18,
+                      height: 18,
+                      background:
+                        done
+                          ? 'var(--hmi-green)'
+                          : active
+                            ? 'var(--hmi-blue)'
+                            : '#d1d5db',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      flexShrink: 0,
+                      fontSize: 10,
+                      color: 'white',
+                      fontWeight: 700
+                    }}>
+                      {done ? '✓' : ''}
+                    </span>
+
+                    <span style={{
+                      fontSize: 12,
+                      color:
+                        done
+                          ? 'var(--hmi-green-dark)'
+                          : active
+                            ? 'var(--hmi-blue)'
+                            : '#9ca3af',
+                      fontWeight:
+                        active ? 700 : 400
+                    }}>
+                      {i + 1}. {label}
+                    </span>
+
+                    {active && (
+                      <span
+                        className="blink"
+                        style={{
+                          marginLeft: 'auto',
+                          color: 'var(--hmi-blue)',
+                          fontSize: 10
+                        }}
+                      >
+                        ●
+                      </span>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+
+            {/* Current operation */}
+            <div style={{
+              background: '#f8fafc',
+              border: '1px solid var(--hmi-border-light)',
+              padding: '9px 12px'
+            }}>
+              <div style={{
+                fontSize: 10,
+                color: 'var(--hmi-text-muted)',
+                marginBottom: 3
+              }}>
+                CURRENT OPERATION
+              </div>
+
+              <div style={{
+                fontFamily: 'JetBrains Mono, monospace',
+                fontSize: 13,
+                fontWeight: 800,
+                color: 'var(--hmi-blue)'
+              }}>
+                {currentStep}
+              </div>
+
+              <div style={{
+                fontSize: 11,
+                color: '#475569',
+                marginTop: 3
+              }}>
+                {materialFlowStatus?.current_message ?? '상태 확인 중...'}
+              </div>
+
+              {lastValidation && (
+                <div style={{
+                  marginTop: 8,
+                  paddingTop: 7,
+                  borderTop: '1px solid #e5e7eb',
+                  display: 'flex',
+                  gap: 14,
+                  alignItems: 'center'
                 }}>
-                  <span style={{ width: 16, height: 16, background: i < stageIdx ? 'var(--hmi-green)' : i === stageIdx ? 'var(--hmi-blue)' : '#d1d5db', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: 10, color: 'white', fontWeight: 700 }}>
-                    {i < stageIdx ? '✓' : ''}
+                  <span style={{
+                    fontFamily: 'JetBrains Mono, monospace',
+                    fontSize: 11
+                  }}>
+                    {lastValidation.type}
                   </span>
-                  <span style={{ fontSize: 12, color: i < stageIdx ? 'var(--hmi-green-dark)' : i === stageIdx ? 'var(--hmi-blue)' : '#9ca3af', fontWeight: i === stageIdx ? 700 : 400 }}>
-                    {s}
+
+                  {Number.isFinite(validationWeight) && (
+                    <span style={{
+                      fontFamily: 'JetBrains Mono, monospace',
+                      fontSize: 11,
+                      fontWeight: 700
+                    }}>
+                      {validationWeight.toFixed(1)} g
+                    </span>
+                  )}
+
+                  <span
+                    className={
+                      lastValidation.passed
+                        ? 'badge-green'
+                        : 'badge-red'
+                    }
+                    style={{
+                      fontSize: 9,
+                      padding: '1px 6px'
+                    }}
+                  >
+                    {lastValidation.passed
+                      ? 'PASS'
+                      : 'FAIL'}
                   </span>
-                  {i === stageIdx && <span className="blink" style={{ fontSize: 10, color: 'var(--hmi-blue)', fontFamily: 'JetBrains Mono, monospace', marginLeft: 'auto' }}>●</span>}
                 </div>
-              ))}
+              )}
             </div>
           </div>
         </div>
@@ -1850,8 +2108,13 @@ function TrayMovingScreen({
 
             {/* Buttons */}
             <div style={{ display: 'flex', gap: 6 }}>
-              <button className="btn-warning" style={{ flex: 1, padding: '8px', fontSize: 12 }} onClick={onPause}>
-                ⏸ 일시 정지
+              <button
+                className="btn-warning"
+                disabled
+                title="자동 조달 중에는 안전상 일시정지를 사용하지 않습니다."
+                style={{ flex: 1, padding: '8px', fontSize: 12 }}
+              >
+                ⏸ 자동 조달 중
               </button>
               <button className="btn-danger" style={{ flex: 1, padding: '8px', fontSize: 12 }} onClick={onStop}>
                 ■ 작업 중지
@@ -3706,82 +3969,6 @@ function WorkHistoryScreen({
               </tbody>
             </table>
           )}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// ============================================================
-// SCREEN: EQUIPMENT ERROR
-// ============================================================
-function EquipmentErrorScreen({ onRetry, onHome, onStop }: { onRetry: () => void; onHome: () => void; onStop: () => void }) {
-  return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-      <div style={{ background: '#7f1d1d', color: 'white', padding: '8px 16px', borderBottom: '2px solid var(--hmi-red-accent)', flexShrink: 0, display: 'flex', alignItems: 'center', gap: 10 }}>
-        <span style={{ fontSize: 20 }}>⚠</span>
-        <span style={{ fontWeight: 900, fontSize: 16, letterSpacing: '0.1em', fontFamily: 'JetBrains Mono, monospace' }}>STAGE ERROR</span>
-      </div>
-      <div style={{ flex: 1, overflow: 'auto', background: '#fef2f2', padding: 24, display: 'flex', gap: 20 }}>
-        {/* Error info */}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 14 }}>
-          <div style={{ background: 'white', border: '2px solid var(--hmi-red-accent)', padding: '18px 22px' }}>
-            <div style={{ fontWeight: 700, fontSize: 18, color: 'var(--hmi-red)', marginBottom: 4 }}>X축 이동 시간 초과</div>
-            <div style={{ fontSize: 13, color: '#374151', marginBottom: 16 }}>지정 시간 내에 목표 위치에 도달하지 못했습니다.</div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-              {[
-                { label: '목표 위치', val: '358 mm' },
-                { label: '현재 위치', val: '241 mm' },
-                { label: '오류 코드', val: 'ERR-X01' },
-                { label: '발생 시각', val: '12:02:14' },
-              ].map(r => (
-                <div key={r.label} style={{ background: '#fef2f2', border: '1px solid #fecaca', padding: '8px 12px' }}>
-                  <div style={{ fontSize: 11, color: 'var(--hmi-text-muted)' }}>{r.label}</div>
-                  <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: 14, color: 'var(--hmi-red)' }}>{r.val}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button className="btn-warning" style={{ flex: 1, padding: '12px', fontSize: 14 }} onClick={onRetry}>
-              ↺ 재시도
-            </button>
-            <button className="btn-primary" style={{ flex: 1, padding: '12px', fontSize: 14 }} onClick={onHome}>
-              ⌂ 원점 복귀
-            </button>
-            <button className="btn-danger" style={{ flex: 1, padding: '12px', fontSize: 14 }} onClick={onStop}>
-              ■ 작업 종료
-            </button>
-          </div>
-        </div>
-
-        {/* System status */}
-        <div style={{ flex: '0 0 260px', background: 'white', border: '1px solid var(--hmi-border)' }}>
-          <div className="section-header" style={{ fontSize: 11 }}>장비 상태</div>
-          <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {[
-              { label: 'STM32', val: 'CONNECTED', ok: true },
-              { label: 'X Axis', val: 'ERROR', ok: false },
-              { label: 'Z Axis', val: 'READY', ok: true },
-              { label: 'Camera', val: 'NORMAL', ok: true },
-              { label: 'Load Cell', val: 'NORMAL', ok: true },
-              { label: 'Database', val: 'NORMAL', ok: true },
-            ].map(s => (
-              <div key={s.label} style={{
-                display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px',
-                background: !s.ok ? '#fef2f2' : '#f8f9fa',
-                border: `1px solid ${!s.ok ? '#fecaca' : 'var(--hmi-border-light)'}`,
-              }}>
-                <span className="status-dot" style={{ background: s.ok ? '#22c55e' : '#dc2626' }} />
-                <span style={{ flex: 1, fontSize: 13, fontFamily: 'JetBrains Mono, monospace' }}>{s.label}</span>
-                <span style={{
-                  fontFamily: 'JetBrains Mono, monospace', fontSize: 12, fontWeight: 700,
-                  color: s.ok ? 'var(--hmi-green)' : 'var(--hmi-red)'
-                }}>{s.val}</span>
-              </div>
-            ))}
-          </div>
         </div>
       </div>
     </div>
@@ -6777,15 +6964,23 @@ export default function App() {
               return tray
             }
 
-            const stock = Number(matchedEntry.stock ?? 0)
-          const maxStock = 500
+            const stock =
+              Number(matchedEntry.stock ?? 0)
 
-          return {
-            ...tray,
-            stock,
-            maxStock,
-            status: stock <= 100 ? 'LOW STOCK' : 'READY',
-          }
+            const maxStock =
+              Number(matchedEntry.max_stock ?? 30)
+
+            const status =
+              matchedEntry.status === 'LOW STOCK'
+                ? 'LOW STOCK'
+                : 'READY'
+
+            return {
+              ...tray,
+              stock,
+              maxStock,
+              status,
+            }
           })
         )
 
@@ -6821,7 +7016,8 @@ export default function App() {
 
   const nav = useCallback((s: Screen) => {
     // nav는 화면 전환만 담당한다.
-    // 실제 Stage 이동 명령은 goToTrayMoving() 한 곳에서만 보낸다.
+    // 자동 Tray 조달/반환의 실제 장비 제어는
+    // Backend MaterialFlowExecutor가 담당한다.
     setPrevScreen(screen)
     setScreen(s)
   }, [screen])
@@ -6953,7 +7149,9 @@ export default function App() {
             ? String(item.tray ?? '-')
             : `TRAY ${String(trayNumber).padStart(2, '0')}`
 
-          const trayInfo = TRAYS_INITIAL.find(
+          // 현재 Backend inventory.json과 동기화된
+          // React Tray 상태를 기준으로 재고를 판단한다.
+          const trayInfo = trays.find(
             tray => tray.id === trayId
           )
 
@@ -7026,34 +7224,29 @@ export default function App() {
 
   const handlePause = async () => {
     setShowStopConfirm(false)
-    setIsPaused(true)
 
-    // 현재는 MockStageAdapter가 응답.
-    // 실제 STM32 연결 후에도 UI 코드는 그대로 사용한다.
-    await requestStagePause()
-  }
-
-  const handleResume = async () => {
-    const resumed = await requestStageResume()
-
-    if (resumed) {
-      setIsPaused(false)
-    } else {
-      alert('Stage 작업 재개 요청에 실패했습니다.')
-    }
+    alert(
+      '현재 자동 운전에서는 일시 정지를 지원하지 않습니다.\n\n'
+      + '중단이 필요한 경우 작업 중지를 사용하고, '
+      + '장비 상태 확인 후 RESET/HOME을 진행해주세요.'
+    )
   }
 
   const handleRestartCurrentStage = async () => {
-    // 현재 화면 컴포넌트를 새로 생성해서
-    // 화면 내부 진행 상태를 처음(대기)부터 다시 시작한다.
+    // 자동 Tray 조달은 Stage 단독 동작이 아니라
+    // Stage + Gripper + Load Cell 전체 시퀀스이므로
+    // TRAY_MOVING 화면에서 Stage만 임의 재실행하지 않는다.
+    if (screen === 'TRAY_MOVING') {
+      alert(
+        '자동 Tray 조달 단계는 개별 재시작할 수 없습니다.\n\n'
+        + '중단이 필요한 경우 작업 중지 후 장비 상태를 확인하고 '
+        + 'RESET/HOME 후 작업을 다시 시작해주세요.'
+      )
+      return
+    }
+
     setIsPaused(false)
     setRestartKey(key => key + 1)
-
-    // Tray 이동 화면을 다시 시작하는 경우에는
-    // 동일한 Tray 이동 요청도 Python Stage 계층에 다시 보낸다.
-    if (screen === 'TRAY_MOVING' && currentItem?.tray) {
-      await requestStageMove(currentItem.tray)
-    }
   }
 
   const handleStopRequest = () => {
@@ -7086,206 +7279,6 @@ export default function App() {
   // 현재는 FastAPI의 MockStageAdapter가 응답하고,
   // 나중에는 server.py 뒤의 실제 STM32StageAdapter로 교체한다.
   // ============================================================
-  const requestStageMove = async (
-    trayLabel: string
-  ): Promise<{
-    success: boolean
-    message: string
-  }> => {
-    const match =
-      trayLabel.match(/\d+/)
-
-    if (!match) {
-      return {
-        success: false,
-        message:
-          `Tray 번호를 찾을 수 없습니다: ${trayLabel}`,
-      }
-    }
-
-    const trayId =
-      Number(match[0])
-
-    try {
-      const response = await fetch(
-        `http://127.0.0.1:8000/stage/move-to-tray/${trayId}`,
-        {
-          method: 'POST',
-        }
-      )
-
-      if (!response.ok) {
-        throw new Error(
-          `Stage 서버 오류: ${response.status}`
-        )
-      }
-
-      const result =
-        await response.json()
-
-      if (!result.success) {
-        return {
-          success: false,
-          message:
-            result.message ||
-            result.error ||
-            'Stage 이동에 실패했습니다.',
-        }
-      }
-
-      console.log(
-        '[STAGE] 이동 완료:',
-        result
-      )
-
-      return {
-        success: true,
-        message:
-          result.message ||
-          'Stage 이동 완료',
-      }
-
-    } catch (error) {
-      console.error(
-        '[STAGE] 이동 요청 실패:',
-        error
-      )
-
-      return {
-        success: false,
-        message:
-          error instanceof Error
-            ? error.message
-            : 'Stage 이동 요청 실패',
-      }
-    }
-  }
-
-  const requestStageHandoff = async (): Promise<{
-    success: boolean
-    message: string
-  }> => {
-    try {
-      const response = await fetch(
-        'http://127.0.0.1:8000/stage/move-to-handoff',
-        {
-          method: 'POST',
-        }
-      )
-
-      if (!response.ok) {
-        throw new Error(
-          `Stage Handoff 서버 오류: ${response.status}`
-        )
-      }
-
-      const result = await response.json()
-
-      if (!result.success) {
-        return {
-          success: false,
-          message:
-            result.message ||
-            result.error ||
-            'Handoff 이동 실패',
-        }
-      }
-
-      console.log(
-        '[STAGE] Handoff 이동 완료:',
-        result
-      )
-
-      return {
-        success: true,
-        message:
-          result.message ||
-          'Handoff 이동 완료',
-      }
-
-    } catch (error) {
-      console.error(
-        '[STAGE] Handoff 이동 요청 실패:',
-        error
-      )
-
-      return {
-        success: false,
-        message:
-          error instanceof Error
-            ? error.message
-            : 'Handoff 이동 요청 실패',
-      }
-    }
-  }
-
-
-  const requestStagePause = async (): Promise<boolean> => {
-    try {
-      const response = await fetch(
-        'http://127.0.0.1:8000/stage/pause',
-        { method: 'POST' }
-      )
-
-      if (!response.ok) {
-        throw new Error(
-          `Stage PAUSE 서버 오류: ${response.status}`
-        )
-      }
-
-      const result = await response.json()
-
-      console.log(
-        '[STAGE] PAUSE 요청 성공:',
-        result
-      )
-
-      return true
-
-    } catch (error) {
-      console.error(
-        '[STAGE] PAUSE 요청 실패:',
-        error
-      )
-
-      return false
-    }
-  }
-
-
-  const requestStageResume = async (): Promise<boolean> => {
-    try {
-      const response = await fetch(
-        'http://127.0.0.1:8000/stage/resume',
-        { method: 'POST' }
-      )
-
-      if (!response.ok) {
-        throw new Error(
-          `Stage RESUME 서버 오류: ${response.status}`
-        )
-      }
-
-      const result = await response.json()
-
-      console.log(
-        '[STAGE] RESUME 요청 성공:',
-        result
-      )
-
-      return true
-
-    } catch (error) {
-      console.error(
-        '[STAGE] RESUME 요청 실패:',
-        error
-      )
-
-      return false
-    }
-  }
-
-
   const requestStageStop = async (): Promise<boolean> => {
     try {
       const response = await fetch(
@@ -7385,14 +7378,19 @@ export default function App() {
         const stock =
           Number(matchedEntry.stock ?? 0)
 
+        const maxStock =
+          Number(matchedEntry.max_stock ?? 30)
+
+        const status =
+          matchedEntry.status === 'LOW STOCK'
+            ? 'LOW STOCK'
+            : 'READY'
+
         return {
           ...tray,
           stock,
-          maxStock: 500,
-          status:
-            stock <= 100
-              ? 'LOW STOCK'
-              : 'READY',
+          maxStock,
+          status,
         }
       })
     )
@@ -7929,6 +7927,47 @@ export default function App() {
   }
 
 
+  const executeMaterialFlow = async (
+    path: string
+  ) => {
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:8000${path}`,
+        {
+          method: 'POST',
+        }
+      )
+
+      const result = await response.json()
+
+      if (
+        !response.ok ||
+        !result.success
+      ) {
+        throw new Error(
+          result.message ||
+          `Material Flow 실행 실패: ${path}`
+        )
+      }
+
+      console.log(
+        `[MATERIAL EXECUTOR] ${path}:`,
+        result
+      )
+
+      return result
+
+    } catch (error) {
+      console.error(
+        `[MATERIAL EXECUTOR] ${path} 실패:`,
+        error
+      )
+
+      throw error
+    }
+  }
+
+
   const requestMaterialReturnReady = async (
     trayId: number
   ) => {
@@ -7987,14 +8026,21 @@ export default function App() {
       }
 
       if (
+        status.supply_state === 'ABORTED'
+      ) {
+        throw new Error(
+          'Material Flow가 중단 상태입니다. '
+          + '장비 상태 확인 및 RESET 후 작업을 다시 시작하세요.'
+        )
+      }
+
+      if (
         status.supply_complete === true
       ) {
         console.log(
           '[MATERIAL] 모든 Tray 공급 완료. RETURN_WAIT'
         )
 
-        // 공급이 끝난 Stage는 Handoff에 머물면서
-        // 작업자가 반환한 Tray를 독립적으로 회수한다.
         void runReturnSequence().catch(
           error => {
             console.error(
@@ -8034,94 +8080,22 @@ export default function App() {
         `TRAY ${String(trayId).padStart(2, '0')}`
 
       console.log(
-        '[MATERIAL] 공급 시작:',
+        '[MATERIAL] Executor 공급 시작:',
         trayLabel
       )
 
-      // 1. 실제 Stage -> Tray 위치
-      const moveResult =
-        await requestStageMove(
-          trayLabel
+      const result =
+        await executeMaterialFlow(
+          '/material-flow/execute-supply'
         )
-
-      if (!moveResult.success) {
-        throw new Error(
-          moveResult.message
-        )
-      }
-
-      // 2. Tray 위치 도착
-      if (
-        !await postMaterialFlow(
-          '/material-flow/supply/tray-arrived'
-        )
-      ) {
-        throw new Error(
-          'Tray 도착 상태 전환 실패'
-        )
-      }
-
-      // 3. ArUco 미세 정렬
-      //
-      // 현재 카메라 미연동:
-      // 상태만 성공 처리.
-      // 향후 실제 ArUco 보정 완료 신호로 교체.
-      if (
-        !await postMaterialFlow(
-          '/material-flow/supply/alignment-complete'
-        )
-      ) {
-        throw new Error(
-          'ArUco 정렬 상태 전환 실패'
-        )
-      }
-
-      // 4. Gripper 인출 + 캐리지 Load Cell 확인
-      //
-      // 현재 장비 미연동:
-      // 상태만 성공 처리.
-      if (
-        !await postMaterialFlow(
-          '/material-flow/supply/extraction-complete'
-        )
-      ) {
-        throw new Error(
-          'Tray 인출 상태 전환 실패'
-        )
-      }
-
-      // 5. 실제 Stage -> Conveyor Handoff
-      const handoffResult =
-        await requestStageHandoff()
-
-      if (!handoffResult.success) {
-        throw new Error(
-          handoffResult.message
-        )
-      }
-
-      // 6. Conveyor 전달 완료
-      //
-      // 향후 Gripper 해제 / Load Cell 감소 /
-      // Conveyor 수용 확인 신호와 연결.
-      const handoffState =
-        await postMaterialFlow(
-          '/material-flow/supply/handoff-complete'
-        )
-
-      if (!handoffState) {
-        throw new Error(
-          'Handoff 완료 상태 전환 실패'
-        )
-      }
 
       console.log(
-        '[MATERIAL] 공급 완료:',
-        trayLabel
+        '[MATERIAL] Executor 공급 완료:',
+        trayLabel,
+        result
       )
     }
   }
-
 
   const runReturnSequence = async () => {
     console.log(
@@ -8135,6 +8109,15 @@ export default function App() {
       if (!status) {
         throw new Error(
           'Material Flow 반환 상태를 확인할 수 없습니다.'
+        )
+      }
+
+      if (
+        status.return_state === 'ABORTED'
+      ) {
+        throw new Error(
+          'Material Flow가 중단 상태입니다. '
+          + '장비 상태 확인 및 RESET 후 작업을 다시 시작하세요.'
         )
       }
 
@@ -8167,8 +8150,6 @@ export default function App() {
           ? status.return_queue.map(Number)
           : []
 
-      // 작업자가 아직 반환 가능한 Tray를
-      // 등록하지 않았다면 Handoff에서 대기.
       if (
         returnQueue.length === 0
       ) {
@@ -8183,15 +8164,9 @@ export default function App() {
       }
 
       // --------------------------------------------------------
-      // Handoff에 도착한 반환 Tray 자동 식별
-      //
-      // 실제 장비:
-      //   ArUco 결과의 Tray ID 사용
-      //
-      // Mock:
-      //   카메라가 없으므로 Return Queue 첫 Tray를
-      //   Handoff에 도착했다고 가정.
+      // Handoff에 반환된 Tray의 ArUco ID 확인
       // --------------------------------------------------------
+
       const visionResult =
         await requestVisionAruco()
 
@@ -8237,107 +8212,26 @@ export default function App() {
         continue
       }
 
-      console.log(
-        '[MATERIAL] 반환 Tray 자동 인식:',
-        `TRAY ${String(detectedTrayId).padStart(2, '0')}`
-      )
-
-      // 1. ArUco로 반환 Tray ID 확인
-      const identified =
-        await postMaterialFlow(
-          `/material-flow/return/identified/${detectedTrayId}`
-        )
-
-      if (!identified) {
-        throw new Error(
-          '반환 Tray ID 반영 실패'
-        )
-      }
-
-      // 2. Handoff에서 Gripper 파지 +
-      //    캐리지 Load Cell 확인
-      //
-      // 현재 장비 미연동이므로 BYPASS.
-      const pickState =
-        await postMaterialFlow(
-          '/material-flow/return/pick-complete'
-        )
-
-      if (!pickState) {
-        throw new Error(
-          '반환 Tray 파지 상태 전환 실패'
-        )
-      }
-
-      // 3. ArUco로 식별한 Tray의 Slot으로 실제 Stage 이동
       const trayLabel =
         `TRAY ${String(detectedTrayId).padStart(2, '0')}`
 
-      const moveResult =
-        await requestStageMove(
-          trayLabel
-        )
+      console.log(
+        '[MATERIAL] 반환 Tray 인식:',
+        trayLabel
+      )
 
-      if (!moveResult.success) {
-        throw new Error(
-          moveResult.message
+      const result =
+        await executeMaterialFlow(
+          `/material-flow/execute-return/${detectedTrayId}`
         )
-      }
-
-      const slotState =
-        await postMaterialFlow(
-          '/material-flow/return/slot-arrived'
-        )
-
-      if (!slotState) {
-        throw new Error(
-          '반환 Slot 도착 상태 전환 실패'
-        )
-      }
-
-      // 4. Tray 삽입 + Gripper 해제
-      //
-      // 현재 Gripper 미연동이므로 BYPASS.
-      const insertState =
-        await postMaterialFlow(
-          '/material-flow/return/insert-complete'
-        )
-
-      if (!insertState) {
-        throw new Error(
-          'Tray 삽입 상태 전환 실패'
-        )
-      }
-
-      // 5. 다음 반환 Tray를 받기 위해
-      //    실제 Stage Handoff 복귀
-      const handoffResult =
-        await requestStageHandoff()
-
-      if (!handoffResult.success) {
-        throw new Error(
-          handoffResult.message
-        )
-      }
-
-      const handoffState =
-        await postMaterialFlow(
-          '/material-flow/return/handoff-arrived'
-        )
-
-      if (!handoffState) {
-        throw new Error(
-          'Handoff 복귀 상태 전환 실패'
-        )
-      }
 
       console.log(
-        '[MATERIAL] Tray 회수 완료:',
-        trayLabel
+        '[MATERIAL] Executor 반납 완료:',
+        trayLabel,
+        result
       )
     }
   }
-
 
   // ============================================================
   // Workflow API
@@ -8756,52 +8650,6 @@ export default function App() {
     }
   }
 
-
-  const goToTrayMoving = async (
-    itemIndex: number
-  ) => {
-    const targetItem =
-      workItems[itemIndex]
-
-    if (!targetItem) {
-      console.error(
-        '[STAGE] 이동 대상 품목이 없습니다:',
-        itemIndex
-      )
-      return
-    }
-
-    if (!targetItem.tray) {
-      alert(
-        '이동 대상 Tray 정보가 없습니다.'
-      )
-      return
-    }
-
-    setCurrentItemIndex(
-      itemIndex
-    )
-
-    // 실제 Stage가 이동하는 동안
-    // TRAY MOVING 화면을 먼저 보여준다.
-    nav('TRAY_MOVING')
-
-    const moveResult =
-      await requestStageMove(
-        targetItem.tray
-      )
-
-    if (!moveResult.success) {
-      alert(
-        `${targetItem.tray} 이동에 실패했습니다.\n\n`
-        + moveResult.message
-      )
-
-      // 현재는 REVIEW로 복귀.
-      // 이후 장비 오류 화면을 실제 오류정보 기반으로 개선 예정.
-      nav('REVIEW')
-    }
-  }
 
   // ============================================================
   // Rack Layout 저장 / 복원
@@ -9549,8 +9397,6 @@ export default function App() {
     nav('WORK_HISTORY')
   }
   const handleHistoryBack = () => nav(prevScreen === 'WORK_HISTORY' ? 'MAIN' : prevScreen)
-
-  const canShowPause = ['TRAY_MOVING', 'PICKING', 'VERIFICATION', 'FINAL_VERIFICATION', 'TRAY_RETURN'].includes(screen)
   const showStatusBar = screen !== 'EMERGENCY_STOP'
 
   return (
@@ -9703,15 +9549,6 @@ export default function App() {
             history={workHistory}
           />
         )}
-        {screen === 'EQUIPMENT_ERROR' && (
-          <EquipmentErrorScreen
-            onRetry={() => {
-              goToTrayMoving(currentItemIndex)
-            }}
-            onHome={() => nav('MAIN')}
-            onStop={() => { setCurrentItemIndex(0); nav('MAIN') }}
-          />
-        )}
         {screen === 'EMERGENCY_STOP' && (
           <EmergencyStopScreen
             onHome={requestStageHome}
@@ -9719,17 +9556,6 @@ export default function App() {
               setCurrentItemIndex(0)
               nav('MAIN')
             }}
-          />
-        )}
-
-        {/* PAUSE overlay */}
-        {isPaused && canShowPause && (
-          <PauseOverlay
-            currentItem={currentItem}
-            currentStage={pauseStageLabel}
-            onResume={handleResume}
-            onRestart={handleRestartCurrentStage}
-            onStop={handleStopRequest}
           />
         )}
 

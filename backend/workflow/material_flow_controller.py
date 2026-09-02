@@ -24,6 +24,75 @@ class MaterialFlowController:
         self.supply_state = "IDLE"
         self.return_state = "IDLE"
 
+        # UI 실시간 자동 조달/반납 진행 표시용
+        self.current_phase = "IDLE"
+        self.current_step = "IDLE"
+        self.current_message = "대기"
+        self.current_detail = {}
+        self.last_validation = None
+
+    def set_progress(
+        self,
+        *,
+        phase,
+        step,
+        message,
+        detail=None,
+    ):
+        """
+        MaterialFlowExecutor의 현재 실제 동작을 UI에 노출한다.
+        """
+        self.current_phase = str(phase)
+        self.current_step = str(step)
+        self.current_message = str(message)
+        self.current_detail = (
+            dict(detail)
+            if isinstance(detail, dict)
+            else {}
+        )
+
+        return self.get_status()
+
+    def set_validation(
+        self,
+        *,
+        validation_type,
+        passed,
+        detail=None,
+    ):
+        """
+        Load Cell 등 최근 검증 결과를 보존한다.
+        """
+        self.last_validation = {
+            "type": str(validation_type),
+            "passed": bool(passed),
+            "detail": (
+                dict(detail)
+                if isinstance(detail, dict)
+                else {}
+            ),
+        }
+
+        return self.get_status()
+
+    def abort(self):
+        """
+        현재 자동 Material Flow를 중단 상태로 고정한다.
+
+        Queue / 진행 이력은 보존하지만 자동 재개는 허용하지 않는다.
+        새 작업은 start()를 통해 명시적으로 다시 시작해야 한다.
+        """
+        self.supply_state = "ABORTED"
+        self.return_state = "ABORTED"
+
+        self.current_phase = "ABORTED"
+        self.current_step = "ABORTED"
+        self.current_message = (
+            "자동 운전이 중단되었습니다."
+        )
+
+        return self.get_status()
+
     @staticmethod
     def _normalize_tray_id(value):
         """
@@ -84,6 +153,12 @@ class MaterialFlowController:
         if self.supply_queue:
             self.supply_state = "TRAY_MOVING"
             self.return_state = "WAIT_SUPPLY_COMPLETE"
+
+            self.current_phase = "SUPPLY"
+            self.current_step = "MOVE_TO_TRAY"
+            self.current_message = (
+                "첫 번째 Tray 위치 이동 대기"
+            )
 
         return self.get_status()
 
@@ -342,6 +417,28 @@ class MaterialFlowController:
 
             "return_state":
                 self.return_state,
+
+            "current_phase":
+                self.current_phase,
+
+            "current_step":
+                self.current_step,
+
+            "current_message":
+                self.current_message,
+
+            "current_detail":
+                dict(self.current_detail),
+
+            "last_validation":
+                (
+                    dict(self.last_validation)
+                    if isinstance(
+                        self.last_validation,
+                        dict,
+                    )
+                    else None
+                ),
 
             "return_queue":
                 list(self.return_queue),

@@ -550,20 +550,27 @@ else:
     )
 
 # ============================================================
-# Material Flow 실제 Gripper 계통
-# ============================================================
-# Servo / Load Cell / Gripper Stepper는 같은 STM32를 사용하므로
-# 별도 Serial을 열지 않고 동일한 stage 객체를 공유한다.
+# Material Flow 장치 구성
+#
+# UI / Executor는 실제 장비와 Mock 장비를 구분하지 않는다.
+# Adapter만 실행 모드에 따라 교체한다.
 # ============================================================
 
 gripper = None
 gripper_stepper = None
 material_flow_executor = None
 
-if STAGE_MODE == "stm32":
+
+if (
+    STAGE_MODE == "stm32"
+    and LOADCELL_MODE == "stm32"
+):
+
     from adapters.stm32_gripper_adapter import STM32GripperAdapter
     from adapters.stm32_gripper_stepper_adapter import STM32GripperStepperAdapter
 
+    # Stage / Servo / Load Cell / Stepper는
+    # 하나의 실제 STM32 Serial transport를 공유한다.
     gripper = STM32GripperAdapter(
         stage=stage,
     )
@@ -571,23 +578,59 @@ if STAGE_MODE == "stm32":
         stage=stage,
     )
 
-    if LOADCELL_MODE == "stm32":
-        material_flow_executor = MaterialFlowExecutor(
-            material_flow=material_flow,
-            stage=stage,
-            gripper=gripper,
-            loadcell=loadcell,
-            gripper_stepper=gripper_stepper,
-            alignment_callback=None,
-        )
-        print(
-            "[MATERIAL FLOW] STM32 Servo + LoadCell + Stepper 연결"
-        )
-    else:
-        print(
-            "[MATERIAL FLOW] LOADCELL_MODE가 mock이므로 "
-            "실제 Executor는 아직 비활성"
-        )
+    material_flow_executor = MaterialFlowExecutor(
+        material_flow=material_flow,
+        stage=stage,
+        gripper=gripper,
+        loadcell=loadcell,
+        gripper_stepper=gripper_stepper,
+        alignment_callback=None,
+    )
+
+    print(
+        "[MATERIAL FLOW] "
+        "STM32 실제 Executor 활성"
+    )
+
+
+elif (
+    STAGE_MODE == "mock"
+    and LOADCELL_MODE == "mock"
+):
+
+    from adapters.mock_gripper_adapter import MockGripperAdapter
+    from adapters.mock_gripper_stepper_adapter import MockGripperStepperAdapter
+
+    gripper = MockGripperAdapter(
+        loadcell=loadcell,
+    )
+
+    gripper_stepper = MockGripperStepperAdapter()
+
+    material_flow_executor = MaterialFlowExecutor(
+        material_flow=material_flow,
+        stage=stage,
+        gripper=gripper,
+        loadcell=loadcell,
+        gripper_stepper=gripper_stepper,
+        alignment_callback=None,
+    )
+
+    print(
+        "[MATERIAL FLOW] "
+        "MOCK Executor 활성"
+    )
+
+
+else:
+
+    print(
+        "[MATERIAL FLOW] "
+        "Stage/LoadCell 혼합 모드이므로 "
+        "Executor 비활성",
+        f"STAGE_MODE={STAGE_MODE}",
+        f"LOADCELL_MODE={LOADCELL_MODE}",
+    )
 
 PART_INSPECTION_MODE = os.getenv(
     "PART_INSPECTION_MODE",
@@ -2642,8 +2685,15 @@ def material_flow_execute_supply():
         }
 
     try:
-        return material_flow_executor.supply_current_tray()
+        result = material_flow_executor.supply_current_tray()
+
+        if not result.get("success"):
+            result["material_flow"] = material_flow.abort()
+
+        return result
+
     except Exception as error:
+        material_flow.abort()
         return {
             "success": False,
             "message": f"Tray 공급 실행 중 오류: {error}",
@@ -2665,10 +2715,17 @@ def material_flow_execute_return(
         }
 
     try:
-        return material_flow_executor.return_current_tray(
+        result = material_flow_executor.return_current_tray(
             tray_id
         )
+
+        if not result.get("success"):
+            result["material_flow"] = material_flow.abort()
+
+        return result
+
     except Exception as error:
+        material_flow.abort()
         return {
             "success": False,
             "message": f"Tray 반납 실행 중 오류: {error}",

@@ -9,7 +9,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 INVENTORY_PATH = BASE_DIR / "data" / "inventory.json"
 TRANSACTION_PATH = BASE_DIR / "data" / "inventory_transactions.json"
 
-MAX_STOCK = 500
+MAX_STOCK = 30
+LOW_STOCK_THRESHOLD = 6
 
 
 def _read_json(path: Path, default: Any):
@@ -56,9 +57,9 @@ def get_all_inventory():
     """
     UI용 전체 재고 조회.
 
-    - 최대 재고: 500개
-    - 500개 = 100%
-    - 100개 이하 = LOW STOCK
+    - 최대 재고: 30개
+    - 30개 = 100%
+    - 6개 이하 = LOW STOCK
     """
     inventory = load_inventory()
 
@@ -94,7 +95,7 @@ def get_all_inventory():
             ),
             "status": (
                 "LOW STOCK"
-                if stock <= 100
+                if stock <= LOW_STOCK_THRESHOLD
                 else "READY"
             ),
         }
