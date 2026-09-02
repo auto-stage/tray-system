@@ -36,6 +36,7 @@ typedef enum
 {
   STAGE_AXIS_X = 0,
   STAGE_AXIS_Z,
+  STAGE_AXIS_G,
   STAGE_AXIS_COUNT
 } StageAxisId;
 
@@ -204,6 +205,27 @@ typedef struct
 #define GRIP_OPEN_ANGLE_DEG                 30U
 #define GRIP_CLOSE_ANGLE_DEG                150U
 
+/* GRIPPER_STEPPER_PATCH_V1
+ * Gripper rack stepper - initial integration test
+ * STEP = PD14 / TIM4_CH3, DIR = PD15
+ *
+ * ENA and MIN/MAX are intentionally not enabled in this first patch because
+ * their real wiring/polarity and switches must be confirmed on hardware first.
+ * The proven 1/8 microstep rack calculation is 1600 / 150.72 = 10.616 steps/mm.
+ * Start with only 50 mm travel for a safe integration test; change the normal
+ * EXTEND distance after the actual tray reach is measured.
+ */
+#define GRIPPER_STEP_CHANNEL                 TIM_CHANNEL_3
+#define GRIPPER_DIR_GPIO_PORT                GPIOD
+#define GRIPPER_DIR_GPIO_PIN                 GPIO_PIN_15
+#define GRIPPER_DIR_EXTEND_LEVEL             GPIO_PIN_SET
+#define GRIPPER_DEFAULT_STEPS_PER_MM         10.616f
+#define GRIPPER_TEST_TRAVEL_MM               50.0f
+#define GRIPPER_DEFAULT_SPEED_MM_S           60.0f
+#define GRIPPER_DEFAULT_ACCEL_MM_S2          200.0f
+#define GRIPPER_SOFT_MIN_MM                  0.0f
+#define GRIPPER_SOFT_MAX_MM                  300.0f
+
 #define STAGE_CONTROL_PERIOD_MS            10U
 #define STAGE_RX_RING_SIZE                 512U
 #define STAGE_LINE_SIZE                    192U
@@ -219,6 +241,7 @@ typedef struct
 
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
+TIM_HandleTypeDef htim4;
 TIM_HandleTypeDef htim8;
 
 UART_HandleTypeDef huart3;
@@ -243,7 +266,8 @@ static void MX_TIM1_Init(void);
 static void MX_USART3_UART_Init(void);
 static void MX_TIM8_Init(void);
 /* USER CODE BEGIN PFP */
-static void Stage_Init(TIM_HandleTypeDef *htim_x, TIM_HandleTypeDef *htim_z);
+static void Stage_Init(TIM_HandleTypeDef *htim_x, TIM_HandleTypeDef *htim_z,
+                       TIM_HandleTypeDef *htim_g);
 static void Stage_Process10ms(void);
 static void Stage_OnTimerPeriodElapsed(TIM_HandleTypeDef *htim);
 static StageResult Stage_Enable(StageAxisId id, bool enable);
@@ -267,6 +291,8 @@ static void StageProtocol_Init(UART_HandleTypeDef *huart);
 static void StageProtocol_Process(void);
 static void StageProtocol_OnRxComplete(UART_HandleTypeDef *huart);
 static void StageProtocol_SendStatus(void);
+static void StageProtocol_SendGripperStatus(void);
+static void GripperStepper_TimerInit(void);
 
 /* USER CODE END PFP */
 
@@ -460,9 +486,82 @@ static void Servo_SetAngle(uint32_t angle_deg)
   __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, pulse_us);
 }
 
+/* --------------------------------------------------------------------------
+ * Gripper rack stepper - PD14/TIM4_CH3 + PD15 DIR
+ * -------------------------------------------------------------------------- */
+static void GripperStepper_TimerInit(void)
+{
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+  uint32_t pclk1;
+  uint32_t tim_clk;
+  uint32_t prescaler;
+
+  __HAL_RCC_GPIOD_CLK_ENABLE();
+  __HAL_RCC_TIM4_CLK_ENABLE();
+
+  /* PD14 = TIM4_CH3 STEP */
+  GPIO_InitStruct.Pin = GPIO_PIN_14;
+  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+  GPIO_InitStruct.Alternate = GPIO_AF2_TIM4;
+  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
+
+  /* PD15 = DIR, boot LOW */
+  HAL_GPIO_WritePin(GRIPPER_DIR_GPIO_PORT, GRIPPER_DIR_GPIO_PIN, GPIO_PIN_RESET);
+  GPIO_InitStruct.Pin = GRIPPER_DIR_GPIO_PIN;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+  HAL_GPIO_Init(GRIPPER_DIR_GPIO_PORT, &GPIO_InitStruct);
+
+  pclk1 = HAL_RCC_GetPCLK1Freq();
+  if ((RCC->CFGR & RCC_CFGR_PPRE1) == RCC_HCLK_DIV1)
+  {
+    tim_clk = pclk1;
+  }
+  else
+  {
+    tim_clk = pclk1 * 2U;
+  }
+
+  /* Match the existing Stage_SetFrequency() assumption: 1 MHz timer tick. */
+  prescaler = (tim_clk / STAGE_TIMER_TICK_HZ) - 1U;
+
+  htim4.Instance = TIM4;
+  htim4.Init.Prescaler = prescaler;
+  htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim4.Init.Period = 1000U - 1U;
+  htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+
+  if (HAL_TIM_PWM_Init(&htim4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 500U;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+
+  if (HAL_TIM_PWM_ConfigChannel(&htim4, &sConfigOC, GRIPPER_STEP_CHANNEL) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  HAL_NVIC_SetPriority(TIM4_IRQn, 5U, 0U);
+  HAL_NVIC_EnableIRQ(TIM4_IRQn);
+}
+
 static bool Stage_MinActive(const StageAxis *axis)
 {
 #if STAGE_USE_LIMIT_INPUTS
+  if ((axis == NULL) || (axis->min_port == NULL) || (axis->min_pin == 0U))
+  {
+    return false;
+  }
   return Stage_InputActive(axis->min_port, axis->min_pin,
                            STAGE_LIMIT_ACTIVE_LEVEL);
 #else
@@ -474,6 +573,10 @@ static bool Stage_MinActive(const StageAxis *axis)
 static bool Stage_MaxActive(const StageAxis *axis)
 {
 #if STAGE_USE_LIMIT_INPUTS
+  if ((axis == NULL) || (axis->max_port == NULL) || (axis->max_pin == 0U))
+  {
+    return false;
+  }
   return Stage_InputActive(axis->max_port, axis->max_pin,
                            STAGE_LIMIT_ACTIVE_LEVEL);
 #else
@@ -499,9 +602,12 @@ static StageAxis *Stage_AxisOf(StageAxisId id)
 
 static void Stage_DriverEnable(StageAxis *axis, bool enable)
 {
-  HAL_GPIO_WritePin(axis->ena_port, axis->ena_pin,
-                    enable ? axis->enabled_level
-                           : Stage_OppositeLevel(axis->enabled_level));
+  if ((axis->ena_port != NULL) && (axis->ena_pin != 0U))
+  {
+    HAL_GPIO_WritePin(axis->ena_port, axis->ena_pin,
+                      enable ? axis->enabled_level
+                             : Stage_OppositeLevel(axis->enabled_level));
+  }
   axis->enabled = enable;
 }
 
@@ -633,7 +739,8 @@ static StageResult Stage_StartMotion(StageAxis *axis, bool positive,
   return STAGE_OK;
 }
 
-static void Stage_Init(TIM_HandleTypeDef *htim_x, TIM_HandleTypeDef *htim_z)
+static void Stage_Init(TIM_HandleTypeDef *htim_x, TIM_HandleTypeDef *htim_z,
+                       TIM_HandleTypeDef *htim_g)
 {
   memset(stage_axis, 0, sizeof(stage_axis));
 
@@ -685,9 +792,34 @@ static void Stage_Init(TIM_HandleTypeDef *htim_x, TIM_HandleTypeDef *htim_z)
                                 STAGE_Z_DEFAULT_STEPS_PER_MM)
   };
 
+  stage_axis[STAGE_AXIS_G] = (StageAxis)
+  {
+    .htim = htim_g,
+    .channel = GRIPPER_STEP_CHANNEL,
+    .dir_port = GRIPPER_DIR_GPIO_PORT,
+    .dir_pin = GRIPPER_DIR_GPIO_PIN,
+    .ena_port = NULL,
+    .ena_pin = 0U,
+    .dir_positive_level = GRIPPER_DIR_EXTEND_LEVEL,
+    .enabled_level = GPIO_PIN_SET,
+    .min_port = NULL,
+    .min_pin = 0U,
+    .max_port = NULL,
+    .max_pin = 0U,
+    .mode = STAGE_MODE_IDLE,
+    .steps_per_mm = GRIPPER_DEFAULT_STEPS_PER_MM,
+    .soft_min_mm = GRIPPER_SOFT_MIN_MM,
+    .soft_max_mm = GRIPPER_SOFT_MAX_MM,
+    .soft_min_steps = (int64_t)(GRIPPER_SOFT_MIN_MM *
+                                GRIPPER_DEFAULT_STEPS_PER_MM),
+    .soft_max_steps = (int64_t)(GRIPPER_SOFT_MAX_MM *
+                                GRIPPER_DEFAULT_STEPS_PER_MM)
+  };
+
   stage_estop_latched = Stage_EStopInputActive();
   Stage_DriverEnable(&stage_axis[STAGE_AXIS_X], false);
   Stage_DriverEnable(&stage_axis[STAGE_AXIS_Z], false);
+  Stage_DriverEnable(&stage_axis[STAGE_AXIS_G], false);
 }
 
 static StageResult Stage_Enable(StageAxisId id, bool enable)
@@ -848,6 +980,7 @@ static void Stage_StopAll(bool hard)
 {
   (void)Stage_Stop(STAGE_AXIS_X, hard);
   (void)Stage_Stop(STAGE_AXIS_Z, hard);
+  (void)Stage_Stop(STAGE_AXIS_G, hard);
 }
 
 static void Stage_EStop(void)
@@ -1094,26 +1227,6 @@ static void Stage_ProcessAxis10ms(StageAxis *axis)
   {
     if ((float)axis->current_hz <= ((float)axis->start_hz + delta_hz))
     {
-      /*
-       * HOME BACKOFF는 목표 거리까지 반드시 완료해야 한다.
-       *
-       * 여기서 IDLE로 종료하면 remaining_steps가 0이 되기 전에
-       * HOME이 끊겨 HOME_WAIT_SLOW -> HOME_SLOW 재접근으로
-       * 넘어가지 못할 수 있다.
-       *
-       * 따라서 HOME_BACKOFF에서는 start_hz로 계속 이동하고,
-       * Timer ISR에서 remaining_steps == 0이 되었을 때
-       * HOME_WAIT_SLOW로 정상 전환시킨다.
-       */
-      if (axis->mode == STAGE_MODE_HOME_BACKOFF)
-      {
-        if (axis->current_hz != axis->start_hz)
-        {
-          Stage_SetFrequency(axis, axis->start_hz);
-        }
-        return;
-      }
-
       Stage_TimerStop(axis);
       axis->mode = STAGE_MODE_IDLE;
       return;
@@ -1152,6 +1265,7 @@ static void Stage_Process10ms(void)
 
   Stage_ProcessAxis10ms(&stage_axis[STAGE_AXIS_X]);
   Stage_ProcessAxis10ms(&stage_axis[STAGE_AXIS_Z]);
+  Stage_ProcessAxis10ms(&stage_axis[STAGE_AXIS_G]);
 }
 
 static void Stage_GetStatus(StageAxisId id, StageAxisStatus *out)
@@ -1311,6 +1425,22 @@ static void StageProtocol_SendStatus(void)
   StageProtocol_SendText(output);
 }
 
+static void StageProtocol_SendGripperStatus(void)
+{
+  StageAxisStatus g;
+  char position[32];
+  char output[160];
+
+  Stage_GetStatus(STAGE_AXIS_G, &g);
+  StageProtocol_FormatMm(g.position_mm, position, sizeof(position));
+
+  (void)snprintf(output, sizeof(output),
+                 "GRIPPER STATUS %s POS_MM %s STEPS %ld HZ %lu ENABLED %u\r\n",
+                 Stage_ModeName(g.mode), position, (long)g.position_steps,
+                 (unsigned long)g.current_hz, g.enabled ? 1U : 0U);
+  StageProtocol_SendText(output);
+}
+
 static void StageProtocol_HandleLine(char *line)
 {
   char *save = NULL;
@@ -1402,6 +1532,80 @@ static void StageProtocol_HandleLine(char *line)
         action,
         (unsigned long)angle);
 
+    StageProtocol_SendText(output);
+    return;
+  }
+
+  if (strcmp(command, "GRIPPER") == 0)
+  {
+    char *action = StageProtocol_NextToken(&save);
+    StageResult g_result;
+    char output[64];
+
+    if (action == NULL)
+    {
+      StageProtocol_SendText("ERR GRIPPER BAD_PARAM\r\n");
+      return;
+    }
+    StageProtocol_Uppercase(action);
+
+    if (strcmp(action, "STATUS") == 0)
+    {
+      StageProtocol_SendGripperStatus();
+      return;
+    }
+
+    if (strcmp(action, "STOP") == 0)
+    {
+      g_result = Stage_Stop(STAGE_AXIS_G, true);
+      if (g_result == STAGE_OK)
+      {
+        StageProtocol_SendText("OK GRIPPER STOP\r\n");
+      }
+      else
+      {
+        (void)snprintf(output, sizeof(output), "ERR GRIPPER %s\r\n",
+                       Stage_ResultName(g_result));
+        StageProtocol_SendText(output);
+      }
+      return;
+    }
+
+    if ((strcmp(action, "EXTEND") != 0) &&
+        (strcmp(action, "RETRACT") != 0))
+    {
+      StageProtocol_SendText("ERR GRIPPER BAD_PARAM\r\n");
+      return;
+    }
+
+    if (!stage_axis[STAGE_AXIS_G].enabled)
+    {
+      g_result = Stage_Enable(STAGE_AXIS_G, true);
+      if (g_result != STAGE_OK)
+      {
+        (void)snprintf(output, sizeof(output), "ERR GRIPPER %s\r\n",
+                       Stage_ResultName(g_result));
+        StageProtocol_SendText(output);
+        return;
+      }
+    }
+
+    g_result = Stage_MoveMm(
+        STAGE_AXIS_G,
+        (strcmp(action, "EXTEND") == 0) ? GRIPPER_TEST_TRAVEL_MM
+                                         : -GRIPPER_TEST_TRAVEL_MM,
+        GRIPPER_DEFAULT_SPEED_MM_S,
+        GRIPPER_DEFAULT_ACCEL_MM_S2);
+
+    if (g_result == STAGE_OK)
+    {
+      (void)snprintf(output, sizeof(output), "OK GRIPPER %s\r\n", action);
+    }
+    else
+    {
+      (void)snprintf(output, sizeof(output), "ERR GRIPPER %s\r\n",
+                     Stage_ResultName(g_result));
+    }
     StageProtocol_SendText(output);
     return;
   }
@@ -1660,8 +1864,11 @@ int main(void)
   HAL_NVIC_EnableIRQ(EXTI2_IRQn);
 #endif
 
+  /* Gripper STEP timer is manually initialized, matching Servo_Init style. */
+  GripperStepper_TimerInit();
+
   /* 모든 GPIO/타이머/UART 초기화가 끝난 뒤 스테이지 제어를 시작합니다. */
-  Stage_Init(&htim1, &htim8);
+  Stage_Init(&htim1, &htim8, &htim4);
   StageProtocol_Init(&huart3);
   stage_last_10ms = HAL_GetTick();
 /* USER CODE END 2 */
@@ -1991,7 +2198,16 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 /**
-  * @brief TIM1/TIM8의 한 펄스 주기가 끝날 때 위치와 잔여 펄스를 갱신합니다.
+  * @brief Gripper STEP timer interrupt.
+  * Startup vector의 weak TIM4_IRQHandler를 이 strong definition이 대체합니다.
+  */
+void TIM4_IRQHandler(void)
+{
+  HAL_TIM_IRQHandler(&htim4);
+}
+
+/**
+  * @brief TIM1/TIM8/TIM4의 한 펄스 주기가 끝날 때 위치와 잔여 펄스를 갱신합니다.
   */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
