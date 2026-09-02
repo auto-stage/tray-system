@@ -139,6 +139,204 @@ class MaterialFlowExecutor:
             tray_id
         )
 
+    def _retry_pick_once(
+        self,
+        tray_id: int,
+    ) -> dict[str, Any]:
+        """
+        Tray 파지 실패 시 1회만 재시도한다.
+
+        OPEN
+        -> RETRACT
+        -> ArUco 재보정 callback
+        -> EXTEND
+        -> CLOSE
+        -> Load Cell 재확인
+
+        alignment_callback이 없으면 ArUco 단계는 BYPASS된다.
+        """
+
+        history: list[dict[str, Any]] = []
+
+        result = self.gripper.open()
+        history.append({
+            "step": "PICK_RETRY_OPEN",
+            "result": result,
+        })
+
+        if not result.get("success"):
+            return {
+                "success": False,
+                "step": "PICK_RETRY_OPEN",
+                "message": result.get(
+                    "message",
+                    "PICK 재시도 OPEN 실패",
+                ),
+                "history": history,
+            }
+
+        time.sleep(self.grip_settle_sec)
+
+        result = self._retract()
+        history.append({
+            "step": "PICK_RETRY_RETRACT",
+            "result": result,
+        })
+
+        if not result.get("success"):
+            return {
+                "success": False,
+                "step": "PICK_RETRY_RETRACT",
+                "message": result.get(
+                    "message",
+                    "PICK 재시도 RETRACT 실패",
+                ),
+                "history": history,
+            }
+
+        result = self._align(tray_id)
+        history.append({
+            "step": "PICK_RETRY_ARUCO_ALIGN",
+            "result": result,
+        })
+
+        if not result.get("success"):
+            return {
+                "success": False,
+                "step": "PICK_RETRY_ARUCO_ALIGN",
+                "message": result.get(
+                    "message",
+                    "PICK 재시도 ArUco 보정 실패",
+                ),
+                "history": history,
+            }
+
+        result = self._extend()
+        history.append({
+            "step": "PICK_RETRY_EXTEND",
+            "result": result,
+        })
+
+        if not result.get("success"):
+            return {
+                "success": False,
+                "step": "PICK_RETRY_EXTEND",
+                "message": result.get(
+                    "message",
+                    "PICK 재시도 EXTEND 실패",
+                ),
+                "history": history,
+            }
+
+        result = self.gripper.close()
+        history.append({
+            "step": "PICK_RETRY_CLOSE",
+            "result": result,
+        })
+
+        if not result.get("success"):
+            return {
+                "success": False,
+                "step": "PICK_RETRY_CLOSE",
+                "message": result.get(
+                    "message",
+                    "PICK 재시도 CLOSE 실패",
+                ),
+                "history": history,
+            }
+
+        time.sleep(self.grip_settle_sec)
+
+        load_result = self.loadcell.tray_present(
+            threshold_g=self.tray_present_threshold_g,
+            samples=self.loadcell_samples,
+        )
+
+        history.append({
+            "step": "PICK_RETRY_LOAD_VERIFY",
+            "result": load_result,
+        })
+
+        if not load_result.get("success"):
+            return {
+                "success": False,
+                "step": "PICK_RETRY_LOAD_VERIFY",
+                "message": load_result.get(
+                    "message",
+                    "PICK 재시도 Load Cell 측정 실패",
+                ),
+                "loadcell": load_result,
+                "history": history,
+            }
+
+        if not load_result.get(
+            "tray_present",
+            False,
+        ):
+            return {
+                "success": False,
+                "step": "PICK_FAILED",
+                "message": (
+                    "Tray 파지 재시도 후에도 "
+                    "하중이 확인되지 않았습니다."
+                ),
+                "loadcell": load_result,
+                "history": history,
+            }
+
+        return {
+            "success": True,
+            "loadcell": load_result,
+            "history": history,
+        }
+
+    def _recheck_release_once(
+        self,
+    ) -> dict[str, Any]:
+        """
+        OPEN 후 Tray 해제가 확인되지 않을 경우
+        추가 대기 후 Load Cell을 딱 1회 재확인한다.
+
+        재확인에도 실패하면 RETRACT / Stage 이동을 진행하지 않는다.
+        """
+
+        time.sleep(self.grip_settle_sec)
+
+        load_result = self.loadcell.tray_released(
+            threshold_g=self.tray_present_threshold_g,
+            samples=self.loadcell_samples,
+        )
+
+        if not load_result.get("success"):
+            return {
+                "success": False,
+                "step": "RELEASE_RECHECK",
+                "message": load_result.get(
+                    "message",
+                    "Tray 해제 재확인 측정 실패",
+                ),
+                "loadcell": load_result,
+            }
+
+        if not load_result.get(
+            "tray_released",
+            False,
+        ):
+            return {
+                "success": False,
+                "step": "RELEASE_FAILED",
+                "message": (
+                    "Tray 해제 재확인 후에도 "
+                    "하중이 남아 있습니다."
+                ),
+                "loadcell": load_result,
+            }
+
+        return {
+            "success": True,
+            "loadcell": load_result,
+        }
+
     # ========================================================
     # 공급
     # ========================================================
@@ -269,13 +467,33 @@ class MaterialFlowExecutor:
             "tray_present",
             False,
         ):
-            return {
-                "success": False,
-                "step": "LOAD_VERIFY_PICK",
-                "message": "Tray 파지 하중이 확인되지 않았습니다.",
-                "loadcell": load_result,
-                "history": history,
-            }
+            retry_result = self._retry_pick_once(
+                tray_id
+            )
+
+            history.extend(
+                retry_result.get(
+                    "history",
+                    [],
+                )
+            )
+
+            if not retry_result.get("success"):
+                return {
+                    "success": False,
+                    "step": retry_result.get(
+                        "step",
+                        "PICK_FAILED",
+                    ),
+                    "message": retry_result.get(
+                        "message",
+                        "Tray 파지 재시도 실패",
+                    ),
+                    "loadcell": retry_result.get(
+                        "loadcell",
+                    ),
+                    "history": history,
+                }
 
         # ----------------------------------------------------
         # 6. Gripper 후진
@@ -375,13 +593,29 @@ class MaterialFlowExecutor:
             "tray_released",
             False,
         ):
-            return {
-                "success": False,
-                "step": "LOAD_VERIFY_RELEASE",
-                "message": "Tray 전달 후 하중이 제거되지 않았습니다.",
-                "loadcell": load_result,
-                "history": history,
-            }
+            recheck_result = self._recheck_release_once()
+
+            history.append({
+                "step": "LOAD_RELEASE_RECHECK",
+                "result": recheck_result,
+            })
+
+            if not recheck_result.get("success"):
+                return {
+                    "success": False,
+                    "step": recheck_result.get(
+                        "step",
+                        "RELEASE_FAILED",
+                    ),
+                    "message": recheck_result.get(
+                        "message",
+                        "Tray 해제 재확인 실패",
+                    ),
+                    "loadcell": recheck_result.get(
+                        "loadcell",
+                    ),
+                    "history": history,
+                }
 
         # ----------------------------------------------------
         # 11. Gripper 후진
@@ -485,18 +719,49 @@ class MaterialFlowExecutor:
             "result": load_result,
         })
 
-        if (
-            not load_result.get("success")
-            or
-            not load_result.get("tray_present")
-        ):
+        if not load_result.get("success"):
             return {
                 "success": False,
                 "step": "RETURN_LOAD_VERIFY_PICK",
-                "message": "반환 Tray 파지 확인 실패",
+                "message": load_result.get(
+                    "message",
+                    "반환 Tray Load Cell 측정 실패",
+                ),
                 "loadcell": load_result,
                 "history": history,
             }
+
+        if not load_result.get(
+            "tray_present",
+            False,
+        ):
+            retry_result = self._retry_pick_once(
+                tray_id
+            )
+
+            history.extend(
+                retry_result.get(
+                    "history",
+                    [],
+                )
+            )
+
+            if not retry_result.get("success"):
+                return {
+                    "success": False,
+                    "step": retry_result.get(
+                        "step",
+                        "RETURN_PICK_FAILED",
+                    ),
+                    "message": retry_result.get(
+                        "message",
+                        "반환 Tray 파지 재시도 실패",
+                    ),
+                    "loadcell": retry_result.get(
+                        "loadcell",
+                    ),
+                    "history": history,
+                }
 
         # 5. 후진
         result = self._retract()
@@ -560,18 +825,45 @@ class MaterialFlowExecutor:
             "result": load_result,
         })
 
-        if (
-            not load_result.get("success")
-            or
-            not load_result.get("tray_released")
-        ):
+        if not load_result.get("success"):
             return {
                 "success": False,
                 "step": "RETURN_LOAD_VERIFY_RELEASE",
-                "message": "반납 후 Tray 하중 제거 확인 실패",
+                "message": load_result.get(
+                    "message",
+                    "반납 Load Cell 측정 실패",
+                ),
                 "loadcell": load_result,
                 "history": history,
             }
+
+        if not load_result.get(
+            "tray_released",
+            False,
+        ):
+            recheck_result = self._recheck_release_once()
+
+            history.append({
+                "step": "RETURN_RELEASE_RECHECK",
+                "result": recheck_result,
+            })
+
+            if not recheck_result.get("success"):
+                return {
+                    "success": False,
+                    "step": recheck_result.get(
+                        "step",
+                        "RELEASE_FAILED",
+                    ),
+                    "message": recheck_result.get(
+                        "message",
+                        "반납 Tray 해제 재확인 실패",
+                    ),
+                    "loadcell": recheck_result.get(
+                        "loadcell",
+                    ),
+                    "history": history,
+                }
 
         # 10. 후진
         result = self._retract()
