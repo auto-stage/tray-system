@@ -2677,6 +2677,15 @@ def material_flow_start(
 @app.post("/material-flow/execute-supply")
 def material_flow_execute_supply():
 
+    status = material_flow.get_status()
+
+    if status.get("supply_state") == "ABORTED":
+        return {
+            "success": False,
+            "message": "Material Flow가 ABORTED 상태이므로 공급을 실행할 수 없습니다.",
+            "material_flow": status,
+        }
+
     if material_flow_executor is None:
         return {
             "success": False,
@@ -2707,6 +2716,15 @@ def material_flow_execute_return(
     tray_id: int,
 ):
 
+    status = material_flow.get_status()
+
+    if status.get("return_state") == "ABORTED":
+        return {
+            "success": False,
+            "message": "Material Flow가 ABORTED 상태이므로 반납을 실행할 수 없습니다.",
+            "material_flow": status,
+        }
+
     if material_flow_executor is None:
         return {
             "success": False,
@@ -2730,6 +2748,20 @@ def material_flow_execute_return(
             "success": False,
             "message": f"Tray 반납 실행 중 오류: {error}",
         }
+
+
+@app.post("/material-flow/abort")
+def material_flow_abort():
+    """
+    사용자가 현재 자동 작업을 명시적으로 종료할 때 사용한다.
+
+    Stage STOP과 별도로 Material Flow 상태를 ABORTED로 고정해
+    남아 있는 공급/반납 Queue가 자동 재개되지 않도록 한다.
+    """
+    return {
+        "success": True,
+        "data": material_flow.abort(),
+    }
 
 
 @app.get("/material-flow/status")

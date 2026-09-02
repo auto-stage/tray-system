@@ -7117,6 +7117,10 @@ function StageControlScreen({
 // MAIN APP
 // ============================================================
 export default function App() {
+  // 사용자가 명시적으로 작업 중지를 요청한 경우,
+  // STOP으로 인해 발생한 Material Flow ABORTED를
+  // 장비 오류 팝업으로 다시 표시하지 않는다.
+  const operatorStopRef = useRef(false)
   const [screen, setScreen] = useState<Screen>('MAIN')
   const [prevScreen, setPrevScreen] = useState<Screen>('MAIN')
   const [isPaused, setIsPaused] = useState(false)
@@ -7464,8 +7468,58 @@ export default function App() {
   }
 
   const handleStopConfirm = async () => {
-    // 사용자가 '작업 중지'를 최종 확인한 시점에 Stage 정지 요청
-    await requestStageStop()
+    // 사용자가 직접 중지를 요청했음을 먼저 기록한다.
+    // Supply/Return loop의 ABORTED는 의도된 종료로 처리한다.
+    operatorStopRef.current = true
+
+    // 1. 실제 장비 동작 정지
+    const stopped =
+      await requestStageStop()
+
+    if (!stopped) {
+      operatorStopRef.current = false
+
+      alert(
+        '작업 중지 요청에 실패했습니다.\n\n'
+        + '장비 상태를 확인한 후 다시 시도해주세요.'
+      )
+
+      return
+    }
+
+    // 2. 자동 공급/반납 Workflow도 명시적으로 중단
+    let materialAborted = false
+
+    try {
+      const response = await fetch(
+        'http://127.0.0.1:8000/material-flow/abort',
+        {
+          method: 'POST',
+        }
+      )
+
+      const result =
+        await response.json()
+
+      materialAborted =
+        response.ok
+        &&
+        result?.success === true
+
+    } catch (error) {
+      console.error(
+        '[MATERIAL] ABORT 요청 실패:',
+        error
+      )
+    }
+
+    if (!materialAborted) {
+      alert(
+        '장비는 정지했지만 자동 운전 상태 중단에 실패했습니다.\n\n'
+        + 'Backend 상태를 확인해주세요.'
+      )
+      return
+    }
 
     setShowStopConfirm(false)
     setIsPaused(false)
@@ -8225,8 +8279,19 @@ export default function App() {
 
   const runSupplySequence = async () => {
     while (true) {
+      if (operatorStopRef.current) {
+        console.log(
+          '[MATERIAL] 사용자 작업 중지로 Supply Loop 종료'
+        )
+        return
+      }
+
       const status =
         await requestMaterialFlowStatus()
+
+      if (operatorStopRef.current) {
+        return
+      }
 
       if (!status) {
         throw new Error(
@@ -8275,6 +8340,10 @@ export default function App() {
         trayLabel
       )
 
+      if (operatorStopRef.current) {
+        return
+      }
+
       const result =
         await executeMaterialFlow(
           '/material-flow/execute-supply'
@@ -8294,8 +8363,19 @@ export default function App() {
     )
 
     while (true) {
+      if (operatorStopRef.current) {
+        console.log(
+          '[MATERIAL] 사용자 작업 중지로 Return Loop 종료'
+        )
+        return
+      }
+
       const status =
         await requestMaterialFlowStatus()
+
+      if (operatorStopRef.current) {
+        return
+      }
 
       if (!status) {
         throw new Error(
@@ -8361,6 +8441,10 @@ export default function App() {
       const visionResult =
         await requestVisionAruco()
 
+      if (operatorStopRef.current) {
+        return
+      }
+
       let detectedTrayId = -1
 
       if (
@@ -8410,6 +8494,10 @@ export default function App() {
         '[MATERIAL] 반환 Tray 인식:',
         trayLabel
       )
+
+      if (operatorStopRef.current) {
+        return
+      }
 
       const result =
         await executeMaterialFlow(
@@ -8962,6 +9050,7 @@ export default function App() {
     screen === 'TRAY_RETURN' ? 'Tray 복귀 및 재배치' : screen
 
   const handleWorkStart = async () => {
+    operatorStopRef.current = false
     try {
       const stageResponse = await fetch(
         'http://127.0.0.1:8000/stage/status'
@@ -9083,6 +9172,13 @@ export default function App() {
     // 백그라운드에서 계속 진행한다.
     void runSupplySequence().catch(
       error => {
+        if (operatorStopRef.current) {
+          console.log(
+            '[MATERIAL] 사용자 작업 중지로 자동 공급 종료'
+          )
+          return
+        }
+
         console.error(
           '[MATERIAL] 자동 공급 실패:',
           error
@@ -9391,6 +9487,13 @@ export default function App() {
     // 실제 Tray 자동 반납을 시작한다.
     void runReturnSequence().catch(
       error => {
+        if (operatorStopRef.current) {
+          console.log(
+            '[MATERIAL] 사용자 작업 중지로 자동 회수 종료'
+          )
+          return
+        }
+
         console.error(
           '[MATERIAL] 최종 검수 후 자동 회수 실패:',
           error
