@@ -56,6 +56,10 @@ class STM32StageAdapter(StageAdapter):
         self._io_lock = threading.Lock()
         self._motion_lock = threading.Lock()
 
+        # HOME / MOVE 등 장시간 동작을
+        # HARD STOP / ESTOP에서 즉시 취소하기 위한 Event
+        self._stop_event = threading.Event()
+
         self.state = "DISCONNECTED"
 
         self.current_tray = None
@@ -747,6 +751,16 @@ class STM32StageAdapter(StageAdapter):
             deadline
         ):
 
+            if self._stop_event.is_set():
+                return {
+                    "success": False,
+                    "cancelled": True,
+                    "message":
+                        f"{axis} HOME이 STOP으로 중단되었습니다.",
+                    "status":
+                        self.get_status(),
+                }
+
             status = (
                 self.refresh_status()
             )
@@ -819,6 +833,7 @@ class STM32StageAdapter(StageAdapter):
 
         with self._motion_lock:
 
+            self._stop_event.clear()
             self.paused = False
             self.state = "HOMING"
 
@@ -838,7 +853,12 @@ class STM32StageAdapter(StageAdapter):
                     "success"
                 ]:
 
-                    self.state = "ERROR"
+                    if result.get(
+                        "cancelled"
+                    ):
+                        self.state = "STOPPED"
+                    else:
+                        self.state = "ERROR"
 
                     return result
 
@@ -986,6 +1006,16 @@ class STM32StageAdapter(StageAdapter):
             <
             deadline
         ):
+
+            if self._stop_event.is_set():
+                return {
+                    "success": False,
+                    "cancelled": True,
+                    "message":
+                        f"{axis} 이동이 STOP으로 중단되었습니다.",
+                    "status":
+                        self.get_status(),
+                }
 
             status = (
                 self.refresh_status()
@@ -1158,6 +1188,7 @@ class STM32StageAdapter(StageAdapter):
 
         with self._motion_lock:
 
+            self._stop_event.clear()
             self.paused = False
 
             self.current_target = (
@@ -1226,6 +1257,7 @@ class STM32StageAdapter(StageAdapter):
         실제 STM32 프로토콜은 기존 MOVE 상대거리 명령을 그대로 사용한다.
         """
         with self._motion_lock:
+            self._stop_event.clear()
             status = self.refresh_status()
 
             if not status.get("connected"):
@@ -1307,6 +1339,7 @@ class STM32StageAdapter(StageAdapter):
 
         with self._motion_lock:
 
+            self._stop_event.clear()
             self.paused = False
             self.current_target = target
             self.state = "MOVING"
@@ -1416,6 +1449,10 @@ class STM32StageAdapter(StageAdapter):
 
     def stop(self):
 
+        # 먼저 Backend의 진행 중 HOME/MOVE polling을 취소한다.
+        # 이후 STM32에 실제 HARD STOP 명령을 전송한다.
+        self._stop_event.set()
+
         # UI의 일반 STOP도 현재 프로젝트에서는
         # 안전하게 HARD STOP 사용
         result = (
@@ -1440,6 +1477,9 @@ class STM32StageAdapter(StageAdapter):
         }
 
     def emergency_stop(self):
+
+        # ESTOP 역시 진행 중인 Backend motion을 즉시 취소한다.
+        self._stop_event.set()
 
         result = (
             self._send_expect(

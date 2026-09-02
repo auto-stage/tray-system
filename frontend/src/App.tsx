@@ -4722,6 +4722,52 @@ function StageControlScreen({
   }
 
 
+  const runHardStop = async () => {
+    // HARD STOP은 HOME/MOVE 등 다른 명령이 busy 상태여도
+    // 항상 즉시 요청할 수 있어야 한다.
+    setMessage('HARD STOP 요청 중...')
+
+    try {
+      const response = await fetch(
+        'http://127.0.0.1:8000/stage/stop',
+        {
+          method: 'POST',
+        }
+      )
+
+      if (!response.ok) {
+        throw new Error(
+          `서버 오류: ${response.status}`
+        )
+      }
+
+      const result =
+        await response.json()
+
+      if (!result.success) {
+        throw new Error(
+          result.message ||
+          'HARD STOP 실패'
+        )
+      }
+
+      setMessage('HARD STOP 완료')
+
+      await loadStatus()
+
+    } catch (error) {
+      const msg =
+        error instanceof Error
+          ? error.message
+          : 'HARD STOP 실패'
+
+      setMessage(
+        `ERROR: ${msg}`
+      )
+    }
+  }
+
+
   const isMock =
     status?.mock === true
 
@@ -5035,13 +5081,7 @@ function StageControlScreen({
 
           <button
             className="btn-danger"
-            disabled={busy}
-            onClick={() =>
-              runCommand(
-                '/stage/stop',
-                'HARD STOP 완료'
-              )
-            }
+            onClick={runHardStop}
           >
             ■ HARD STOP
           </button>
