@@ -1,5 +1,6 @@
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from services.relocation import build_relocation_plan
@@ -14,8 +15,10 @@ from services.work_history import (
 )
 
 from adapters.mock_stage_adapter import MockStageAdapter
-from adapters.stm32_stage_adapter import STM32StageAdapter
 from adapters.mock_vision_adapter import MockVisionAdapter
+from adapters.mock_loadcell_adapter import MockLoadCellAdapter
+from adapters.mock_part_inspection_adapter import MockPartInspectionAdapter
+from services.inspection_service import InspectionService
 from workflow.workflow_controller import WorkflowController
 from workflow.material_flow_controller import MaterialFlowController
 from parts_db import find_part
@@ -42,6 +45,7 @@ DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(exist_ok=True)
 
 RACK_LAYOUT_PATH = DATA_DIR / "rack_layout.json"
+PARTS_CONFIG_PATH = BASE_DIR / "config" / "parts.yaml"
 
 
 # ============================================================
@@ -88,6 +92,10 @@ STAGE_MODE = os.getenv(
 
 if STAGE_MODE == "stm32":
 
+    # pyserial is only required when real STM32 mode is selected.
+    # Mock development can therefore run before the Stage serial stack is installed.
+    from adapters.stm32_stage_adapter import STM32StageAdapter
+
     stage = STM32StageAdapter(
         port=(
             os.getenv(
@@ -110,9 +118,135 @@ else:
         "[STAGE] MOCK 모드"
     )
 
-vision = MockVisionAdapter()
+# Tray ArUco 검출용 Vision
+VISION_MODE = os.getenv(
+    "VISION_MODE",
+    "mock",
+).strip().lower()
+
+if VISION_MODE == "aruco":
+
+    # 실제 ArUco 모드에서만 의존성을 불러온다.
+    from adapters.aruco_vision_adapter import ArucoVisionAdapter
+
+    camera_index_raw = os.getenv(
+        "VISION_CAMERA_INDEX"
+    )
+
+    aruco_vision = ArucoVisionAdapter(
+        camera_index=(
+            int(camera_index_raw)
+            if camera_index_raw is not None
+            else None
+        ),
+        camera_profile=(
+            os.getenv(
+                "VISION_CAMERA_PROFILE"
+            )
+            or None
+        ),
+    )
+
+    print(
+        "[VISION] 실제 ArUco 모드"
+    )
+
+else:
+
+    aruco_vision = MockVisionAdapter()
+
+    print(
+        "[VISION] MOCK 모드"
+    )
+
 workflow = WorkflowController()
 material_flow = MaterialFlowController()
+
+# 작업지시서 OCR 촬영용 고정 카메라.
+# ArUco 이동부 카메라와 완전히 별도 장치로 관리한다.
+WORK_ORDER_CAMERA_MODE = os.getenv(
+    "WORK_ORDER_CAMERA_MODE",
+    "off",
+).strip().lower()
+
+work_order_camera = None
+
+if WORK_ORDER_CAMERA_MODE == "camera":
+    from adapters.work_order_camera_adapter import WorkOrderCameraAdapter
+
+    work_order_camera_index = int(
+        os.getenv("WORK_ORDER_CAMERA_INDEX", "0")
+    )
+    width_raw = os.getenv("WORK_ORDER_CAMERA_WIDTH")
+    height_raw = os.getenv("WORK_ORDER_CAMERA_HEIGHT")
+
+    work_order_camera = WorkOrderCameraAdapter(
+        camera_index=work_order_camera_index,
+        width=int(width_raw) if width_raw else None,
+        height=int(height_raw) if height_raw else None,
+    )
+
+    print(
+        "[WORK ORDER CAMERA] 실제 카메라 모드",
+        f"index={work_order_camera_index}",
+    )
+
+    if (
+        VISION_MODE == "aruco"
+        and getattr(aruco_vision, "camera_index", None)
+        == work_order_camera_index
+    ):
+        print(
+            "[WARNING] 작업지시서 카메라와 ArUco 카메라가 "
+            "같은 index를 사용합니다. 최종 2-camera 운용에서는 "
+            "서로 다른 index를 지정하세요."
+        )
+else:
+    print("[WORK ORDER CAMERA] OFF 모드")
+
+
+# ============================================================
+# 부품 검수 / Load Cell
+# ============================================================
+#
+# 실제 카메라와 로드셀을 아직 수령하지 않은 단계에서는 두 장치 모두
+# Mock Adapter를 사용한다. 실제 하드웨어 연동 시 이 두 Adapter만 교체하고
+# InspectionService와 UI/Workflow 계약은 그대로 유지한다.
+# ============================================================
+
+LOADCELL_MODE = os.getenv(
+    "LOADCELL_MODE",
+    "mock",
+).strip().lower()
+
+if LOADCELL_MODE != "mock":
+    raise RuntimeError(
+        "현재 브랜치에는 실제 Load Cell Adapter가 아직 없습니다. "
+        "하드웨어 수령 전에는 LOADCELL_MODE=mock을 사용하세요."
+    )
+
+loadcell = MockLoadCellAdapter()
+print("[LOAD CELL] MOCK 모드")
+
+PART_INSPECTION_MODE = os.getenv(
+    "PART_INSPECTION_MODE",
+    "mock",
+).strip().lower()
+
+if PART_INSPECTION_MODE != "mock":
+    raise RuntimeError(
+        "현재 브랜치에는 실제 Part Inspection Adapter가 아직 없습니다. "
+        "카메라 수령 전에는 PART_INSPECTION_MODE=mock을 사용하세요."
+    )
+
+part_vision = MockPartInspectionAdapter()
+print("[PART INSPECTION] MOCK 모드")
+
+inspection_service = InspectionService(
+    loadcell=loadcell,
+    part_vision=part_vision,
+    parts_config_path=PARTS_CONFIG_PATH,
+)
 
 
 # ============================================================
@@ -393,6 +527,65 @@ def root():
     return {
         "message": "Python backend is running"
     }
+
+
+# ============================================================
+# 작업지시서 고정 카메라 API
+# ============================================================
+
+@app.get("/work-order-camera/status")
+def work_order_camera_status():
+    if work_order_camera is None:
+        return {
+            "connected": False,
+            "mode": "off",
+            "camera_index": None,
+            "message": (
+                "WORK_ORDER_CAMERA_MODE=camera로 실행하면 "
+                "작업지시서 고정 카메라를 사용할 수 있습니다."
+            ),
+        }
+
+    return work_order_camera.get_status()
+
+
+@app.get("/work-order-camera/stream")
+def work_order_camera_stream():
+    if work_order_camera is None:
+        raise HTTPException(
+            status_code=503,
+            detail="작업지시서 카메라가 비활성화되어 있습니다.",
+        )
+
+    return StreamingResponse(
+        work_order_camera.iter_mjpeg(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+        },
+    )
+
+
+@app.get("/work-order-camera/snapshot")
+def work_order_camera_snapshot():
+    if work_order_camera is None:
+        raise HTTPException(
+            status_code=503,
+            detail="작업지시서 카메라가 비활성화되어 있습니다.",
+        )
+
+    jpeg = work_order_camera.get_jpeg_frame(jpeg_quality=94)
+    if jpeg is None:
+        raise HTTPException(
+            status_code=503,
+            detail="작업지시서 카메라 프레임을 읽지 못했습니다.",
+        )
+
+    return Response(
+        content=jpeg,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 # ============================================================
@@ -867,11 +1060,282 @@ class VisionCountRequest(
     expected_quantity: int
 
 
+class CameraSelectRequest(
+    BaseModel
+):
+    profile_name: str
+    camera_index: int | None = None
+
+
 @app.get("/vision/status")
 def vision_status():
 
     return (
-        vision.get_camera_status()
+        aruco_vision.get_camera_status()
+    )
+
+
+@app.get("/vision/stream")
+def vision_stream(
+    annotate: bool = True,
+):
+
+    if not hasattr(
+        aruco_vision,
+        "iter_mjpeg",
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "실제 ArUco 카메라 모드에서만 "
+                "영상 스트림을 사용할 수 있습니다."
+            ),
+        )
+
+    return StreamingResponse(
+        aruco_vision.iter_mjpeg(
+            annotate=annotate,
+        ),
+        media_type=(
+            "multipart/x-mixed-replace; "
+            "boundary=frame"
+        ),
+        headers={
+            "Cache-Control": (
+                "no-store, no-cache, "
+                "must-revalidate"
+            ),
+        },
+    )
+
+
+@app.get("/vision/snapshot")
+def vision_snapshot(
+    annotate: bool = True,
+):
+
+    if not hasattr(
+        aruco_vision,
+        "get_jpeg_frame",
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "실제 ArUco 카메라 모드에서만 "
+                "스냅샷을 사용할 수 있습니다."
+            ),
+        )
+
+    jpeg = aruco_vision.get_jpeg_frame(
+        jpeg_quality=90,
+        annotate=annotate,
+    )
+
+    if jpeg is None:
+        raise HTTPException(
+            status_code=503,
+            detail="카메라 프레임을 읽지 못했습니다.",
+        )
+
+    return Response(
+        content=jpeg,
+        media_type="image/jpeg",
+        headers={
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@app.get("/vision/camera/profiles")
+def vision_camera_profiles():
+
+    if not hasattr(
+        aruco_vision,
+        "list_camera_profiles",
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "실제 ArUco 카메라 모드에서만 "
+                "카메라 설정을 사용할 수 있습니다."
+            ),
+        )
+
+    return (
+        aruco_vision.list_camera_profiles()
+    )
+
+
+@app.post("/vision/camera/select")
+def vision_camera_select(
+    request:
+        CameraSelectRequest
+):
+
+    if not hasattr(
+        aruco_vision,
+        "select_camera",
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "실제 ArUco 카메라 모드에서만 "
+                "카메라 설정을 사용할 수 있습니다."
+            ),
+        )
+
+    try:
+        return (
+            aruco_vision.select_camera(
+                profile_name=
+                    request.profile_name,
+                camera_index=
+                    request.camera_index,
+            )
+        )
+    except (
+        ValueError,
+        FileNotFoundError,
+    ) as error:
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        ) from error
+
+
+@app.get("/vision/calibration/status")
+def vision_calibration_status():
+
+    if not hasattr(
+        aruco_vision,
+        "get_calibration_status",
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "실제 ArUco 카메라 모드에서만 "
+                "캘리브레이션을 사용할 수 있습니다."
+            ),
+        )
+
+    return (
+        aruco_vision.get_calibration_status()
+    )
+
+
+@app.post("/vision/calibration/sample")
+def vision_calibration_sample():
+
+    if not hasattr(
+        aruco_vision,
+        "add_calibration_sample",
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "실제 ArUco 카메라 모드에서만 "
+                "캘리브레이션을 사용할 수 있습니다."
+            ),
+        )
+
+    result = (
+        aruco_vision.add_calibration_sample()
+    )
+
+    if not result.get(
+        "success",
+        False,
+    ):
+        return result
+
+    return result
+
+
+@app.post("/vision/calibration/clear")
+def vision_calibration_clear():
+
+    if not hasattr(
+        aruco_vision,
+        "clear_calibration_samples",
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "실제 ArUco 카메라 모드에서만 "
+                "캘리브레이션을 사용할 수 있습니다."
+            ),
+        )
+
+    return (
+        aruco_vision.clear_calibration_samples()
+    )
+
+
+@app.post("/vision/calibration/run")
+def vision_calibration_run():
+
+    if not hasattr(
+        aruco_vision,
+        "run_intrinsic_calibration",
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "실제 ArUco 카메라 모드에서만 "
+                "캘리브레이션을 사용할 수 있습니다."
+            ),
+        )
+
+    try:
+        return (
+            aruco_vision.run_intrinsic_calibration()
+        )
+    except RuntimeError as error:
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        ) from error
+
+
+class InspectionRunRequest(BaseModel):
+    part_no: str
+    expected_quantity: int
+
+
+@app.get("/loadcell/status")
+def loadcell_status():
+    return loadcell.get_status()
+
+
+@app.post("/loadcell/tare")
+def loadcell_tare():
+    return loadcell.tare()
+
+
+@app.get("/inspection/status")
+def inspection_status():
+    return inspection_service.get_status()
+
+
+@app.get("/parts/config")
+def parts_config():
+    return inspection_service.get_parts_config()
+
+
+@app.post("/inspection/reload-config")
+def inspection_reload_config():
+    inspection_service.reload_config()
+    return {
+        "success": True,
+        "configured_parts": inspection_service.get_status()["configured_parts"],
+    }
+
+
+@app.post("/inspection/run")
+def inspection_run(request: InspectionRunRequest):
+    return inspection_service.run(
+        part_no=request.part_no,
+        expected_quantity=request.expected_quantity,
     )
 
 
@@ -880,23 +1344,189 @@ def vision_count(
     request:
         VisionCountRequest
 ):
+    """Legacy compatibility endpoint.
 
-    return (
-        vision.detect_part_count(
-            part_no=
-                request.part_no,
-            expected_quantity=
-                request.expected_quantity,
-        )
+    The primary quantity source is now the load cell and camera vision is a
+    part/appearance cross-check. Existing callers can keep using /vision/count
+    during the transition because the response retains matched and
+    detected_quantity fields.
+    """
+    return inspection_service.run(
+        part_no=request.part_no,
+        expected_quantity=request.expected_quantity,
     )
 
 
 @app.get("/vision/aruco")
-def vision_aruco():
+def vision_aruco(
+    expected_tray_id: int | None = None,
+):
 
     return (
-        vision.detect_tray_aruco()
+        aruco_vision.detect_tray_aruco(
+            expected_tray_id=
+                expected_tray_id
+        )
     )
+
+
+class VisionAlignRequest(BaseModel):
+    expected_tray_id: int
+
+
+@app.post("/vision/align")
+def vision_align(request: VisionAlignRequest):
+    """
+    Planned closed-loop X/Z alignment for the moving ArUco camera.
+
+    Safety gates:
+    - correction_loop.enabled must be true
+    - real tray geometry must be calibrated
+    - Camera->Carriage alignment must be calibrated
+    - X/Z tolerance and maximum single correction must be configured
+    """
+    if not hasattr(aruco_vision, "get_correction_loop_config"):
+        return {
+            "success": False,
+            "error": "ALIGNMENT_UNAVAILABLE",
+            "message": "실제 ArUco Vision 모드에서만 사용할 수 있습니다.",
+        }
+
+    config = aruco_vision.get_correction_loop_config()
+
+    if not config.get("enabled", False):
+        return {
+            "success": False,
+            "error": "CORRECTION_LOOP_DISABLED",
+            "message": (
+                "자동 X/Z 보정은 아직 비활성화 상태입니다. "
+                "실장/캘리브레이션 완료 후 system.yaml에서 활성화하세요."
+            ),
+            "config": config,
+        }
+
+    tolerance = config.get("tolerance_mm", {})
+    max_single = config.get("max_single_correction_mm", {})
+
+    required_limits = [
+        tolerance.get("x"), tolerance.get("z"),
+        max_single.get("x"), max_single.get("z"),
+    ]
+
+    if any(
+        value is None or float(value) <= 0
+        for value in required_limits
+    ):
+        return {
+            "success": False,
+            "error": "ALIGNMENT_LIMITS_NOT_CONFIGURED",
+            "message": (
+                "X/Z 허용오차와 1회 최대 보정량을 먼저 실측값으로 설정해야 합니다."
+            ),
+            "config": config,
+        }
+
+    max_iterations = int(config.get("max_iterations", 2))
+    steps = []
+
+    for iteration in range(max_iterations + 1):
+        detection = aruco_vision.detect_tray_aruco(
+            expected_tray_id=request.expected_tray_id
+        )
+        steps.append({
+            "type": "VISION",
+            "iteration": iteration,
+            "result": detection,
+        })
+
+        if not detection.get("success") or not detection.get("detected"):
+            return {
+                "success": False,
+                "error": detection.get("error_code", "VISION_FAILED"),
+                "message": detection.get("message", "ArUco 검출에 실패했습니다."),
+                "steps": steps,
+            }
+
+        if not detection.get("ready_for_stage_correction"):
+            return {
+                "success": False,
+                "error": "VISION_CORRECTION_BLOCKED",
+                "message": detection.get(
+                    "message",
+                    "Vision 보정 조건이 충족되지 않았습니다.",
+                ),
+                "steps": steps,
+            }
+
+        delta = detection.get("stage_correction_delta_mm") or {}
+        dx = float(delta.get("x", 0.0))
+        dz = float(delta.get("z", 0.0))
+
+        if (
+            abs(dx) <= float(tolerance["x"])
+            and abs(dz) <= float(tolerance["z"])
+        ):
+            return {
+                "success": True,
+                "aligned": True,
+                "iterations": iteration,
+                "final_detection": detection,
+                "steps": steps,
+            }
+
+        if iteration >= max_iterations:
+            return {
+                "success": False,
+                "aligned": False,
+                "error": "ALIGNMENT_MAX_ITERATIONS",
+                "message": "허용 횟수 내에 X/Z 정렬 오차가 수렴하지 않았습니다.",
+                "final_detection": detection,
+                "steps": steps,
+            }
+
+        if (
+            abs(dx) > float(max_single["x"])
+            or abs(dz) > float(max_single["z"])
+        ):
+            return {
+                "success": False,
+                "aligned": False,
+                "error": "CORRECTION_TOO_LARGE",
+                "message": "Vision 보정량이 설정된 1회 최대 이동량을 초과했습니다.",
+                "correction_mm": {"x": dx, "z": dz},
+                "steps": steps,
+            }
+
+        move = stage.move_relative(dx, dz)
+        steps.append({
+            "type": "STAGE_CORRECTION",
+            "iteration": iteration + 1,
+            "result": move,
+        })
+
+        if not move.get("success"):
+            return {
+                "success": False,
+                "aligned": False,
+                "error": "STAGE_CORRECTION_FAILED",
+                "message": move.get("message", "Stage 보정 이동에 실패했습니다."),
+                "steps": steps,
+            }
+
+        if not config.get("reobserve_after_move", True):
+            return {
+                "success": True,
+                "aligned": None,
+                "verified": False,
+                "message": "보정 이동은 완료했지만 재관측 검증은 비활성화되어 있습니다.",
+                "steps": steps,
+            }
+
+    return {
+        "success": False,
+        "error": "ALIGNMENT_INTERNAL_ERROR",
+        "steps": steps,
+    }
 
 
 # ============================================================
@@ -929,7 +1559,6 @@ def stage_move_to_tray(
             tray_id
         )
     )
-
 
 
 @app.post("/stage/move-to-handoff")

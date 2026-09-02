@@ -130,7 +130,6 @@ class MockStageAdapter(StageAdapter):
             "status": self.get_status(),
         }
 
-
     def move_to_handoff(self):
         """
         임시 컨베이어 Handoff 위치로 이동한다.
@@ -187,6 +186,42 @@ class MockStageAdapter(StageAdapter):
                 "CONVEYOR_HANDOFF 이동 완료 (MOCK)"
             ),
             "target": target,
+            "status": self.get_status(),
+        }
+
+
+    def move_relative(
+        self,
+        x_delta_mm: float,
+        z_delta_mm: float,
+    ):
+        if self.estopped:
+            return {
+                "success": False,
+                "error": "ESTOP_ACTIVE",
+                "message": "E-STOP 상태에서는 보정 이동할 수 없습니다.",
+                "status": self.get_status(),
+            }
+
+        if not self.homed:
+            return {
+                "success": False,
+                "error": "NOT_HOMED",
+                "message": "Stage HOME을 먼저 수행해야 합니다.",
+                "status": self.get_status(),
+            }
+
+        dx = float(x_delta_mm)
+        dz = float(z_delta_mm)
+        self.moving = True
+        self.x += dx
+        self.z += dz
+        self.moving = False
+
+        return {
+            "success": True,
+            "message": "Vision X/Z 상대 보정 이동 완료 (MOCK)",
+            "delta_mm": {"x": dx, "z": dz},
             "status": self.get_status(),
         }
 

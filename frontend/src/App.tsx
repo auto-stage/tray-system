@@ -706,13 +706,104 @@ function MainScreen({
 // ============================================================
 // SCREEN: CAMERA CAPTURE
 // ============================================================
-function CameraCaptureScreen({ onUse, onCancel }: { onUse: () => void; onCancel: () => void }) {
-  const [captured, setCaptured] = useState(false)
-  const [flashVisible, setFlashVisible] = useState(false)
+function CameraCaptureScreen({
+  onUse,
+  onCancel,
+}: {
+  onUse: (file: File) => void | Promise<void>
+  onCancel: () => void
+}) {
+  const api = 'http://127.0.0.1:8000'
+  const [capturedUrl, setCapturedUrl] = useState<string | null>(null)
+  const [capturedBlob, setCapturedBlob] = useState<Blob | null>(null)
+  const [status, setStatus] = useState<any>(null)
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState('')
+  const [streamKey, setStreamKey] = useState(0)
 
-  const handleCapture = () => {
-    setFlashVisible(true)
-    setTimeout(() => { setFlashVisible(false); setCaptured(true) }, 300)
+  const connected = status?.connected === true
+
+  const loadStatus = async () => {
+    try {
+      const response = await fetch(`${api}/work-order-camera/status`)
+      if (!response.ok) throw new Error(`Camera status 오류: ${response.status}`)
+      setStatus(await response.json())
+    } catch (error) {
+      console.error('[WORK ORDER CAMERA] status 오류:', error)
+      setStatus(null)
+    }
+  }
+
+  useEffect(() => {
+    loadStatus()
+    const timer = setInterval(loadStatus, 1000)
+    return () => clearInterval(timer)
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      if (capturedUrl) URL.revokeObjectURL(capturedUrl)
+    }
+  }, [capturedUrl])
+
+  const clearCapture = () => {
+    if (capturedUrl) URL.revokeObjectURL(capturedUrl)
+    setCapturedUrl(null)
+    setCapturedBlob(null)
+    setMessage('')
+    setStreamKey(key => key + 1)
+  }
+
+  const handleCapture = async () => {
+    if (!connected || busy) return
+
+    setBusy(true)
+    setMessage('촬영 중...')
+
+    try {
+      const response = await fetch(
+        `${api}/work-order-camera/snapshot?v=${Date.now()}`,
+        { cache: 'no-store' }
+      )
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}))
+        throw new Error(data?.detail ?? `촬영 오류: ${response.status}`)
+      }
+
+      const blob = await response.blob()
+      if (!blob.type.startsWith('image/')) {
+        throw new Error('카메라 응답이 이미지 형식이 아닙니다.')
+      }
+
+      if (capturedUrl) URL.revokeObjectURL(capturedUrl)
+      const url = URL.createObjectURL(blob)
+      setCapturedBlob(blob)
+      setCapturedUrl(url)
+      setMessage('촬영 완료')
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : '촬영 실패'
+      setMessage(`ERROR: ${msg}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleUse = async () => {
+    if (!capturedBlob || busy) return
+
+    const file = new File(
+      [capturedBlob],
+      `work_order_camera_${Date.now()}.jpg`,
+      { type: capturedBlob.type || 'image/jpeg' }
+    )
+
+    setBusy(true)
+    try {
+      await onUse(file)
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (
@@ -721,100 +812,81 @@ function CameraCaptureScreen({ onUse, onCancel }: { onUse: () => void; onCancel:
         📷 작업지시서 촬영
       </div>
       <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--hmi-work-bg)', padding: 24 }}>
-        <div style={{ width: 700, display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {/* Status bar */}
+        <div style={{ width: 760, display: 'flex', flexDirection: 'column', gap: 16 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span className="status-dot" style={{ background: '#22c55e' }} />
-            <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 12, fontWeight: 700, color: 'var(--hmi-green)' }}>
-              CAMERA CONNECTED
+            <span className="status-dot" style={{ background: connected ? '#22c55e' : '#ef4444' }} />
+            <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 12, fontWeight: 700, color: connected ? 'var(--hmi-green)' : 'var(--hmi-red)' }}>
+              {connected ? 'WORK ORDER CAMERA CONNECTED' : 'WORK ORDER CAMERA DISCONNECTED'}
+            </span>
+            <span style={{ marginLeft: 'auto', fontFamily: 'JetBrains Mono, monospace', fontSize: 10, color: '#64748b' }}>
+              INDEX {status?.camera_index ?? '--'} · {status?.image_width ?? '--'}×{status?.image_height ?? '--'}
             </span>
           </div>
 
-          {/* Camera view */}
           <div style={{ position: 'relative', background: '#0a0f1a', border: '2px solid #2d4a70', overflow: 'hidden', aspectRatio: '4/3' }}>
-            {flashVisible && (
-              <div style={{ position: 'absolute', inset: 0, background: 'white', zIndex: 10, opacity: 0.9 }} />
-            )}
-            {!captured ? (
-              <>
-                {/* Simulated live camera */}
-                <div className="camera-live" style={{ position: 'absolute', inset: 0 }}>
-                  {/* Mock document lines */}
-                  <div style={{ position: 'absolute', inset: '15%', border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.04)' }} />
-                  <div style={{ position: 'absolute', top: '20%', left: '18%', right: '18%', borderTop: '1px solid rgba(255,255,255,0.1)' }} />
-                  <div style={{ position: 'absolute', top: '28%', left: '18%', right: '18%', borderTop: '1px solid rgba(255,255,255,0.07)' }} />
-                  <div style={{ position: 'absolute', top: '36%', left: '18%', right: '18%', borderTop: '1px solid rgba(255,255,255,0.07)' }} />
-                  <div style={{ position: 'absolute', top: '50%', left: '18%', right: '18%', borderTop: '1px solid rgba(255,255,255,0.07)' }} />
-                </div>
-                {/* Guide frame */}
-                <div style={{
-                  position: 'absolute', inset: '8%',
-                  border: '2px dashed rgba(34,197,94,0.7)',
-                  pointerEvents: 'none'
-                }}>
-                  {/* Corner markers */}
-                  {[{top:0,left:0},{top:0,right:0},{bottom:0,left:0},{bottom:0,right:0}].map((s,i) => (
-                    <div key={i} style={{
-                      position: 'absolute', ...s,
-                      width: 20, height: 20,
-                      borderTop: (s.top === 0) ? '3px solid #22c55e' : 'none',
-                      borderBottom: (s as any).bottom === 0 ? '3px solid #22c55e' : 'none',
-                      borderLeft: (s.left === 0) ? '3px solid #22c55e' : 'none',
-                      borderRight: (s as any).right === 0 ? '3px solid #22c55e' : 'none',
-                    }} />
-                  ))}
-                  <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', color: 'rgba(255,255,255,0.5)', fontSize: 11, fontFamily: 'JetBrains Mono, monospace', whiteSpace: 'nowrap' }}>
-                    작업지시서를 안에 배치하세요
-                  </div>
-                </div>
-                {/* LIVE indicator */}
-                <div style={{ position: 'absolute', top: 10, left: 10, display: 'flex', alignItems: 'center', gap: 5 }}>
-                  <span className="status-dot blink" style={{ background: '#ef4444' }} />
-                  <span style={{ color: 'white', fontSize: 11, fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>LIVE</span>
-                </div>
-                <div style={{ position: 'absolute', top: 10, right: 10, color: 'rgba(255,255,255,0.6)', fontSize: 10, fontFamily: 'JetBrains Mono, monospace' }}>CAM-01</div>
-              </>
+            {capturedUrl ? (
+              <img
+                src={capturedUrl}
+                alt="Captured work order"
+                style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }}
+              />
+            ) : connected ? (
+              <img
+                key={streamKey}
+                src={`${api}/work-order-camera/stream?v=${streamKey}`}
+                alt="Work order live camera"
+                style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }}
+              />
             ) : (
-              <>
-                {/* Captured image mockup */}
-                <div style={{ position: 'absolute', inset: 0, background: '#f0f0ee', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  <div style={{ width: '70%', background: 'white', padding: 20, border: '1px solid #ccc', boxShadow: '0 4px 20px rgba(0,0,0,0.3)' }}>
-                    <div style={{ borderBottom: '2px solid #1e3a5f', paddingBottom: 8, marginBottom: 10, fontWeight: 800, fontSize: 13, color: '#1e3a5f' }}>
-                      작업지시서 / WORK ORDER
-                    </div>
-                    <div style={{ fontSize: 11, color: '#374151', fontFamily: 'JetBrains Mono, monospace', lineHeight: 1.6 }}>
-                      <div>작업번호: WO-20260817-001</div>
-                      <div>발행일자: 2026-08-17</div>
-                      <div style={{ marginTop: 6, marginBottom: 4, fontWeight: 700 }}>품목 목록:</div>
-                      <div>B001 | 육각볼트 M6X20 | 10 EA</div>
-                      <div>B002 | 육각렌치볼트 M5X15 | 8 EA</div>
-                      <div>S001 | 십자머리나사 M4X12 | 20 EA</div>
-                    </div>
-                  </div>
-                </div>
-                <div style={{ position: 'absolute', top: 10, left: 10, background: '#16a34a', color: 'white', fontSize: 10, fontFamily: 'JetBrains Mono, monospace', padding: '2px 8px', fontWeight: 700 }}>
-                  CAPTURED
-                </div>
-              </>
+              <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#94a3b8', fontFamily: 'JetBrains Mono, monospace', textAlign: 'center', padding: 24 }}>
+                WORK_ORDER_CAMERA_MODE=camera로 Backend를 실행하고<br />고정 카메라 index를 지정하세요.
+              </div>
             )}
+
+            {!capturedUrl && (
+              <div style={{ position: 'absolute', inset: '8%', border: '2px dashed rgba(34,197,94,0.75)', pointerEvents: 'none' }}>
+                {[{top:0,left:0},{top:0,right:0},{bottom:0,left:0},{bottom:0,right:0}].map((s,i) => (
+                  <div key={i} style={{
+                    position: 'absolute', ...s,
+                    width: 20, height: 20,
+                    borderTop: (s.top === 0) ? '3px solid #22c55e' : 'none',
+                    borderBottom: (s as any).bottom === 0 ? '3px solid #22c55e' : 'none',
+                    borderLeft: (s.left === 0) ? '3px solid #22c55e' : 'none',
+                    borderRight: (s as any).right === 0 ? '3px solid #22c55e' : 'none',
+                  }} />
+                ))}
+                <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', color: 'rgba(255,255,255,0.72)', fontSize: 11, fontFamily: 'JetBrains Mono, monospace', whiteSpace: 'nowrap', background: 'rgba(0,0,0,0.35)', padding: '3px 7px' }}>
+                  작업지시서를 가이드 안에 배치하세요
+                </div>
+              </div>
+            )}
+
+            <div style={{ position: 'absolute', top: 10, left: 10, background: capturedUrl ? '#16a34a' : '#b91c1c', color: 'white', fontSize: 10, fontFamily: 'JetBrains Mono, monospace', padding: '2px 8px', fontWeight: 700 }}>
+              {capturedUrl ? 'CAPTURED' : 'LIVE'}
+            </div>
           </div>
 
-          {/* Buttons */}
+          {message && (
+            <div style={{ fontSize: 11, color: message.startsWith('ERROR') ? 'var(--hmi-red)' : '#64748b', fontFamily: 'JetBrains Mono, monospace' }}>
+              {message}
+            </div>
+          )}
+
           <div style={{ display: 'flex', gap: 10 }}>
-            {!captured ? (
+            {!capturedUrl ? (
               <>
                 <button className="btn-secondary" style={{ flex: 1, padding: '12px' }} onClick={onCancel}>✕ 취소</button>
-                <button className="btn-primary" style={{ flex: 2, padding: '12px', fontSize: 16 }} onClick={handleCapture}>
-                  📷 촬영
+                <button className="btn-primary" disabled={!connected || busy} style={{ flex: 2, padding: '12px', fontSize: 16 }} onClick={handleCapture}>
+                  📷 실제 촬영
                 </button>
               </>
             ) : (
               <>
-                <button className="btn-warning" style={{ flex: 1, padding: '12px' }} onClick={() => setCaptured(false)}>
+                <button className="btn-warning" disabled={busy} style={{ flex: 1, padding: '12px' }} onClick={clearCapture}>
                   ↺ 다시 촬영
                 </button>
-                <button className="btn-green" style={{ flex: 2, padding: '12px', fontSize: 15 }} onClick={onUse}>
-                  ✓ 이 사진 사용
+                <button className="btn-green" disabled={busy} style={{ flex: 2, padding: '12px', fontSize: 15 }} onClick={handleUse}>
+                  ✓ 이 사진으로 OCR 분석
                 </button>
               </>
             )}
@@ -1820,8 +1892,8 @@ function PickingScreen({
   onAutoVerify: () => void; onManualVerify: () => void
   onPause: () => void; onStop: () => void
 }) {
-  // count goes up slowly — simulates camera detecting as worker drops parts in tray
-  // interval is longer to feel realistic, not a fake timer
+  // Hardware-free development simulator. The real system will replace this
+  // visual count with load-cell feedback after the sensor is installed.
   const [count, setCount] = useState(0)
   const [stable, setStable] = useState(false)
   const [stableCountdown, setStableCountdown] = useState(3)
@@ -1832,7 +1904,7 @@ function PickingScreen({
   useEffect(() => { pausedRef.current = isPaused }, [isPaused])
   useEffect(() => { stopRef.current = showStop }, [showStop])
 
-  // Simulate YOLO detection: a new part is "detected" every ~1.8s (realistic picking pace)
+  // Mock picking progress until the real load-cell feedback is connected.
   useEffect(() => {
     if (count >= item.qty) return
     const t = setTimeout(() => {
@@ -1920,9 +1992,9 @@ function PickingScreen({
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', background: '#0a0f1a' }}>
           <div style={{ background: '#0f1929', borderBottom: '1px solid #1e3a5f', padding: '6px 14px', display: 'flex', alignItems: 'center', gap: 10 }}>
             <span className="status-dot blink" style={{ background: '#ef4444' }} />
-            <span style={{ color: '#94a3b8', fontSize: 11, fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>CAM-02  YOLO DETECTION  LIVE</span>
+            <span style={{ color: '#94a3b8', fontSize: 11, fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>PICKING MONITOR  MOCK</span>
             <div style={{ flex: 1 }} />
-            <span style={{ color: '#4ade80', fontSize: 10, fontFamily: 'JetBrains Mono, monospace' }}>MODEL: yolov8n-parts  FPS: 28</span>
+            <span style={{ color: '#4ade80', fontSize: 10, fontFamily: 'JetBrains Mono, monospace' }}>LOAD CELL + PART VISION: HARDWARE PENDING</span>
           </div>
 
           {/* Camera area */}
@@ -2001,7 +2073,7 @@ function PickingScreen({
             }}>
               {/* Live count */}
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-                <span style={{ color: '#64748b', fontSize: 11, fontFamily: 'JetBrains Mono, monospace' }}>DETECTED</span>
+                <span style={{ color: '#64748b', fontSize: 11, fontFamily: 'JetBrains Mono, monospace' }}>MOCK COUNT</span>
                 <span style={{
                   fontFamily: 'JetBrains Mono, monospace', fontWeight: 900,
                   fontSize: 42, lineHeight: 1,
@@ -2057,7 +2129,7 @@ function PickingScreen({
 }
 
 // ============================================================
-// SCREEN: VERIFICATION (카메라 수량 확인 — 품목별, 빠른 자동 전환)
+// SCREEN: VERIFICATION (Load Cell 수량 + Camera 부품 검수)
 // ============================================================
 function VerificationScreen({
   item, itemIndex, totalItems, isPaused, showStop, mode,
@@ -2076,6 +2148,7 @@ function VerificationScreen({
   const [detectedQuantity, setDetectedQuantity] =
     useState<number | null>(null)
   const [visionError, setVisionError] = useState('')
+  const [inspectionResult, setInspectionResult] = useState<any>(null)
   const visionPromiseRef = useRef<{
     key: string
     promise: Promise<any>
@@ -2093,6 +2166,7 @@ function VerificationScreen({
     const runVisionCheck = async () => {
       setCountdown(2)
       setVisionError('')
+      setInspectionResult(null)
 
       if (mode === 'MANUAL') {
         setConfirmed(false)
@@ -2141,22 +2215,27 @@ function VerificationScreen({
         return
       }
 
+      setInspectionResult(result)
+
       const detected =
         Number(
-          result.detected_quantity ?? 0
+          result?.loadcell?.estimated_quantity
+          ?? result.detected_quantity
+          ?? 0
         )
 
       setDetectedQuantity(detected)
 
       if (
         result.success &&
-        result.matched
+        (result.passed ?? result.matched)
       ) {
         setConfirmed(true)
       } else {
         setConfirmed(false)
         setVisionError(
-          `수량 불일치 — 검출 ${detected} / 요청 ${item.qty}`
+          result.message
+          || `검수 NG — 수량 ${detected} / 요청 ${item.qty}`
         )
       }
     }
@@ -2195,7 +2274,7 @@ function VerificationScreen({
         background: 'var(--hmi-navy)', color: 'white', padding: '8px 16px',
         display: 'flex', alignItems: 'center', gap: 12, borderBottom: '2px solid var(--hmi-blue-light)', flexShrink: 0
       }}>
-        <span style={{ fontWeight: 900, fontSize: 16, letterSpacing: '0.1em' }}>카메라 수량 확인</span>
+        <span style={{ fontWeight: 900, fontSize: 16, letterSpacing: '0.1em' }}>부품 / 수량 교차 검수</span>
         <div style={{ flex: 1 }} />
         <span style={{ fontSize: 12, color: '#93c5fd', fontFamily: 'JetBrains Mono, monospace' }}>품목 {itemIndex + 1} / {totalItems}</span>
       </div>
@@ -2206,7 +2285,7 @@ function VerificationScreen({
           {/* Camera view */}
           <div style={{ flex: '0 0 380px' }}>
             <div style={{ background: '#1e3a5f', color: 'white', padding: '6px 14px', fontSize: 11, fontWeight: 700, letterSpacing: '0.05em', display: 'flex', alignItems: 'center', gap: 8 }}>
-              CAM-02  CAMERA INSPECTION
+              FIXED CAMERA  PART INSPECTION
               <span className="status-dot blink" style={{ background: '#ef4444', marginLeft: 4 }} />
               <span style={{ fontSize: 10, fontFamily: 'JetBrains Mono, monospace' }}>LIVE</span>
             </div>
@@ -2226,7 +2305,7 @@ function VerificationScreen({
               </div>
               {mode === 'AUTO' && confirmed && (
                 <div style={{ position: 'absolute', top: 8, left: 8, background: '#16a34a', color: 'white', fontSize: 10, padding: '2px 8px', fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>
-                  ✓ COUNT CONFIRMED
+                  ✓ INSPECTION PASS
                 </div>
               )}
               {mode === 'AUTO' && !confirmed && (
@@ -2240,13 +2319,31 @@ function VerificationScreen({
           {/* Result panel */}
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 12 }}>
             <div style={{ background: 'white', border: '1px solid var(--hmi-border)', padding: '14px 18px' }}>
-              <div style={{ fontSize: 11, color: 'var(--hmi-text-muted)', marginBottom: 12, letterSpacing: '0.05em', fontWeight: 700 }}>YOLO 검출 결과</div>
+              <div style={{ fontSize: 11, color: 'var(--hmi-text-muted)', marginBottom: 12, letterSpacing: '0.05em', fontWeight: 700 }}>하이브리드 검수 결과</div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                 {[
                   { label: '품목', val: item.name },
                   { label: '규격', val: item.spec },
+                  {
+                    label: 'Vision 부품',
+                    val: inspectionResult?.vision?.detected_part_no ?? '-',
+                  },
+                  {
+                    label: 'Vision 상태',
+                    val: inspectionResult?.vision?.visual_ok === true ? 'PASS' : '-',
+                  },
                   { label: '요청 수량', val: `${item.qty} EA` },
-                  { label: '검출 수량', val: `${detectedQuantity ?? '-'} EA` },
+                  { label: 'Load Cell 수량', val: `${detectedQuantity ?? '-'} EA` },
+                  {
+                    label: '측정 중량',
+                    val: inspectionResult?.loadcell?.weight_g != null
+                      ? `${Number(inspectionResult.loadcell.weight_g).toFixed(1)} g`
+                      : '-',
+                  },
+                  {
+                    label: '센서 모드',
+                    val: inspectionResult?.mock ? 'MOCK' : 'REAL',
+                  },
                 ].map(r => (
                   <div key={r.label} style={{ background: '#f8f9fa', border: '1px solid var(--hmi-border-light)', padding: '8px 10px' }}>
                     <div style={{ fontSize: 11, color: 'var(--hmi-text-muted)' }}>{r.label}</div>
@@ -2296,18 +2393,18 @@ function VerificationScreen({
               ) : !confirmed ? (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: 'var(--hmi-blue)' }}>
                   <div className="spin" style={{ width: 18, height: 18, border: '2px solid var(--hmi-blue)', borderTopColor: 'transparent', flexShrink: 0 }} />
-                  <span style={{ fontWeight: 700 }}>카메라 수량 확인 중...</span>
+                  <span style={{ fontWeight: 700 }}>부품 종류와 중량 기반 수량을 교차 검수 중...</span>
                 </div>
               ) : (
                 <>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
                     <span style={{ fontSize: 20, color: 'var(--hmi-green)' }}>✓</span>
                     <div>
-                      <div style={{ fontWeight: 700, fontSize: 15, color: 'var(--hmi-green)' }}>수량 확인 완료 — MATCH</div>
+                      <div style={{ fontWeight: 700, fontSize: 15, color: 'var(--hmi-green)' }}>통합 검수 완료 — PASS</div>
                       <div style={{ fontSize: 12, color: 'var(--hmi-text-muted)' }}>
                         {itemIndex + 1 < totalItems
                           ? `다음 품목 (${itemIndex + 2}/${totalItems})으로 이동합니다...`
-                          : '모든 품목 피킹 완료 — 최종 무게 검증으로 이동합니다...'}
+                          : '모든 품목 검수 완료 — 최종 확인으로 이동합니다...'}
                       </div>
                     </div>
                     {!isPaused && !showStop && (
@@ -2387,7 +2484,7 @@ function FinalVerificationScreen({
         background: 'var(--hmi-navy)', color: 'white', padding: '8px 16px',
         display: 'flex', alignItems: 'center', gap: 12, borderBottom: '2px solid var(--hmi-blue-light)', flexShrink: 0
       }}>
-        <span style={{ fontWeight: 900, fontSize: 16, letterSpacing: '0.1em' }}>FINAL WEIGHT VERIFICATION</span>
+        <span style={{ fontWeight: 900, fontSize: 16, letterSpacing: '0.1em' }}>FINAL WEIGHT VERIFICATION <span style={{ fontSize: 10, color: '#fcd34d' }}>MOCK</span></span>
         <div style={{ flex: 1 }} />
         <span style={{ fontSize: 12, color: '#93c5fd', fontFamily: 'JetBrains Mono, monospace' }}>전체 {items.length}개 품목 합산 검증</span>
       </div>
@@ -2556,7 +2653,6 @@ function TrayReturnScreen({
     toSlot: slotOf(item.tray, targetSlots),
     phase: 'waiting',
   }))
-
   const [entries, setEntries] = useState<TrayReturnEntry[]>(initEntries)
   const [currentIdx, setCurrentIdx] = useState(0)
   const pausedRef = useRef(isPaused)
@@ -3796,6 +3892,718 @@ function EmergencyStopScreen({
 }
 
 
+
+// ============================================================
+// SETTINGS PANEL: CAMERA / VISION
+// ============================================================
+function CameraControlScreen({
+  onBack,
+  onStage,
+}: {
+  onBack: () => void
+  onStage: () => void
+}) {
+  const [status, setStatus] = useState<any>(null)
+  const [detection, setDetection] = useState<any>(null)
+  const [profiles, setProfiles] = useState<any[]>([])
+  const [calibration, setCalibration] = useState<any>(null)
+  const [selectedProfile, setSelectedProfile] = useState('')
+  const [cameraIndex, setCameraIndex] = useState(0)
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState('')
+  const [autoDetect, setAutoDetect] = useState(true)
+  const [streamKey, setStreamKey] = useState(0)
+
+  const api = 'http://127.0.0.1:8000'
+
+  const loadStatus = async () => {
+    try {
+      const response = await fetch(`${api}/vision/status`)
+      if (!response.ok) throw new Error(`Camera status 오류: ${response.status}`)
+      const data = await response.json()
+      setStatus(data)
+
+      if (Number.isFinite(Number(data?.camera_index))) {
+        setCameraIndex(Number(data.camera_index))
+      }
+    } catch (error) {
+      console.error('[CAMERA SETTINGS] status 오류:', error)
+      setStatus(null)
+    }
+  }
+
+  const loadProfiles = async () => {
+    try {
+      const response = await fetch(`${api}/vision/camera/profiles`)
+      if (!response.ok) throw new Error(`Camera profile 오류: ${response.status}`)
+      const data = await response.json()
+      setProfiles(Array.isArray(data?.profiles) ? data.profiles : [])
+
+      const selected =
+        data?.profiles?.find((profile: any) => profile.selected)
+        ?? data?.profiles?.[0]
+
+      if (selected?.file) {
+        setSelectedProfile(String(selected.file))
+      }
+
+      if (Number.isFinite(Number(data?.camera_index))) {
+        setCameraIndex(Number(data.camera_index))
+      }
+    } catch (error) {
+      console.error('[CAMERA SETTINGS] profile 오류:', error)
+      setProfiles([])
+    }
+  }
+
+  const loadCalibration = async () => {
+    try {
+      const response = await fetch(`${api}/vision/calibration/status`)
+      if (!response.ok) throw new Error(`Calibration status 오류: ${response.status}`)
+      setCalibration(await response.json())
+    } catch (error) {
+      console.error('[CAMERA SETTINGS] calibration status 오류:', error)
+      setCalibration(null)
+    }
+  }
+
+  const loadDetection = async () => {
+    try {
+      const response = await fetch(`${api}/vision/aruco`)
+      if (!response.ok) throw new Error(`ArUco 오류: ${response.status}`)
+      setDetection(await response.json())
+    } catch (error) {
+      console.error('[CAMERA SETTINGS] ArUco 오류:', error)
+      setDetection(null)
+    }
+  }
+
+  const refreshAll = async () => {
+    await Promise.all([
+      loadStatus(),
+      loadProfiles(),
+      loadCalibration(),
+      loadDetection(),
+    ])
+  }
+
+  useEffect(() => {
+    refreshAll()
+
+    const statusTimer = setInterval(() => {
+      loadStatus()
+      loadCalibration()
+    }, 1000)
+
+    return () => clearInterval(statusTimer)
+  }, [])
+
+  useEffect(() => {
+    if (!autoDetect) return
+
+    loadDetection()
+    const timer = setInterval(loadDetection, 700)
+    return () => clearInterval(timer)
+  }, [autoDetect])
+
+  const postJson = async (
+    endpoint: string,
+    body?: Record<string, unknown>,
+  ) => {
+    const response = await fetch(
+      `${api}${endpoint}`,
+      {
+        method: 'POST',
+        headers: body
+          ? { 'Content-Type': 'application/json' }
+          : undefined,
+        body: body
+          ? JSON.stringify(body)
+          : undefined,
+      }
+    )
+
+    const data = await response.json().catch(() => ({}))
+
+    if (!response.ok) {
+      throw new Error(
+        data?.detail
+        ?? data?.message
+        ?? `서버 오류: ${response.status}`
+      )
+    }
+
+    return data
+  }
+
+  const applyCamera = async () => {
+    if (!selectedProfile || busy) return
+
+    setBusy(true)
+    setMessage('카메라 설정 적용 중...')
+
+    try {
+      const result = await postJson(
+        '/vision/camera/select',
+        {
+          profile_name: selectedProfile,
+          camera_index: cameraIndex,
+        }
+      )
+
+      setMessage(
+        result?.message
+        ?? '카메라 설정 적용 완료'
+      )
+      setStreamKey(key => key + 1)
+      await refreshAll()
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : '카메라 설정 실패'
+      setMessage(`ERROR: ${msg}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const addSample = async () => {
+    if (busy) return
+
+    setBusy(true)
+    setMessage('체커보드 검출 중...')
+
+    try {
+      const result = await postJson('/vision/calibration/sample')
+      setMessage(result?.message ?? '샘플 처리 완료')
+      await loadCalibration()
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : '샘플 추가 실패'
+      setMessage(`ERROR: ${msg}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const clearSamples = async () => {
+    if (busy) return
+    if (!window.confirm('수집한 캘리브레이션 샘플을 모두 지우시겠습니까?')) return
+
+    setBusy(true)
+
+    try {
+      const result = await postJson('/vision/calibration/clear')
+      setMessage(result?.message ?? '샘플 초기화 완료')
+      await loadCalibration()
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : '초기화 실패'
+      setMessage(`ERROR: ${msg}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const runCalibration = async () => {
+    if (busy) return
+
+    const sampleCount = Number(calibration?.sample_count ?? 0)
+    if (sampleCount < 10) {
+      setMessage('ERROR: 유효한 체커보드 샘플이 최소 10장 필요합니다.')
+      return
+    }
+
+    if (!window.confirm(
+      `현재 선택된 ${selectedProfile || '카메라 프로파일'}에 새 Intrinsic을 저장합니다.\n\n계속하시겠습니까?`
+    )) {
+      return
+    }
+
+    setBusy(true)
+    setMessage('Intrinsic 캘리브레이션 계산 중...')
+
+    try {
+      const result = await postJson('/vision/calibration/run')
+      const rms = Number(result?.rms_reprojection_error)
+
+      setMessage(
+        Number.isFinite(rms)
+          ? `캘리브레이션 완료 - RMS ${rms.toFixed(4)}`
+          : (result?.message ?? '캘리브레이션 완료')
+      )
+
+      setStreamKey(key => key + 1)
+      await refreshAll()
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : '캘리브레이션 실패'
+      setMessage(`ERROR: ${msg}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const connected = status?.connected === true
+  const calibrated = status?.camera_calibrated === true
+  const markerDetected = detection?.detected === true
+  const pose = detection?.pose_rpy_deg
+  const grip = detection?.grip_target_camera_mm
+  const correction = detection?.stage_correction_delta_mm
+  const sampleCount = Number(calibration?.sample_count ?? 0)
+  const minimumSamples = Number(calibration?.minimum_samples ?? 10)
+
+  const formatValue = (value: unknown, digits = 2) => {
+    const number = Number(value)
+    return Number.isFinite(number)
+      ? number.toFixed(digits)
+      : '--'
+  }
+
+  return (
+    <div style={{
+      flex: 1,
+      background: '#e5eaf0',
+      padding: 18,
+      overflow: 'auto'
+    }}>
+      <div style={{
+        background: 'var(--hmi-navy)',
+        color: 'white',
+        padding: '10px 16px',
+        fontWeight: 900,
+        fontSize: 16,
+        letterSpacing: '0.08em'
+      }}>
+        SETTINGS / CAMERA · VISION
+      </div>
+
+      <div style={{
+        display: 'flex',
+        gap: 8,
+        marginTop: 12
+      }}>
+        <button className="btn-secondary" onClick={onStage}>
+          STAGE / STM32
+        </button>
+        <button className="btn-primary" disabled>
+          CAMERA / VISION
+        </button>
+      </div>
+
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'minmax(520px, 1.45fr) minmax(360px, 1fr)',
+        gap: 14,
+        marginTop: 14
+      }}>
+        <div style={{
+          background: 'white',
+          border: '1px solid var(--hmi-border)',
+          padding: 14
+        }}>
+          <div className="section-header">
+            Live Camera / ArUco Overlay
+          </div>
+
+          <div style={{
+            background: '#07111f',
+            border: '1px solid #334155',
+            minHeight: 360,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            overflow: 'hidden',
+            marginTop: 10
+          }}>
+            {connected ? (
+              <img
+                key={streamKey}
+                src={`${api}/vision/stream?annotate=true&v=${streamKey}`}
+                alt="Camera live stream"
+                style={{
+                  width: '100%',
+                  maxHeight: 520,
+                  objectFit: 'contain',
+                  display: 'block'
+                }}
+              />
+            ) : (
+              <div style={{
+                color: '#94a3b8',
+                fontFamily: 'JetBrains Mono, monospace',
+                textAlign: 'center'
+              }}>
+                CAMERA DISCONNECTED
+              </div>
+            )}
+          </div>
+
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(3, 1fr)',
+            gap: 8,
+            marginTop: 10
+          }}>
+            {[
+              ['Camera', connected ? 'CONNECTED' : 'DISCONNECTED', connected],
+              ['Intrinsic', calibrated ? 'CALIBRATED' : 'NOT CALIBRATED', calibrated],
+              ['ArUco', markerDetected ? 'DETECTED' : 'NOT DETECTED', markerDetected],
+            ].map(([label, value, ok]) => (
+              <div
+                key={String(label)}
+                style={{
+                  border: '1px solid var(--hmi-border-light)',
+                  padding: '9px 10px',
+                  background: '#f8fafc'
+                }}
+              >
+                <div style={{ fontSize: 10, color: '#64748b' }}>
+                  {String(label)}
+                </div>
+                <div style={{
+                  marginTop: 2,
+                  fontSize: 12,
+                  fontWeight: 800,
+                  fontFamily: 'JetBrains Mono, monospace',
+                  color: ok ? 'var(--hmi-green)' : 'var(--hmi-red)'
+                }}>
+                  {String(value)}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 14
+        }}>
+          <div style={{
+            background: 'white',
+            border: '1px solid var(--hmi-border)',
+            padding: 14
+          }}>
+            <div className="section-header">
+              Camera Source
+            </div>
+
+            <label style={{
+              display: 'block',
+              fontSize: 11,
+              color: '#64748b',
+              marginTop: 10,
+              marginBottom: 4
+            }}>
+              Camera Profile
+            </label>
+
+            <select
+              value={selectedProfile}
+              onChange={event => {
+                const file = event.target.value
+                setSelectedProfile(file)
+
+                const profile = profiles.find(
+                  item => item.file === file
+                )
+
+                if (profile && Number.isFinite(Number(profile.camera_index_hint))) {
+                  setCameraIndex(Number(profile.camera_index_hint))
+                }
+              }}
+              style={{
+                width: '100%',
+                padding: '7px 8px',
+                border: '1px solid var(--hmi-border)',
+                background: 'white'
+              }}
+            >
+              {profiles.map(profile => (
+                <option key={profile.file} value={profile.file}>
+                  {profile.file}
+                  {profile.calibrated ? ' [CAL]' : ' [UNCAL]'}
+                </option>
+              ))}
+            </select>
+
+            <label style={{
+              display: 'block',
+              fontSize: 11,
+              color: '#64748b',
+              marginTop: 10,
+              marginBottom: 4
+            }}>
+              Camera Index
+            </label>
+
+            <input
+              type="number"
+              min={0}
+              value={cameraIndex}
+              onChange={event => setCameraIndex(Number(event.target.value))}
+              style={{
+                width: '100%',
+                padding: '7px 8px',
+                border: '1px solid var(--hmi-border)'
+              }}
+            />
+
+            <button
+              className="btn-primary"
+              disabled={busy || !selectedProfile}
+              onClick={applyCamera}
+              style={{
+                width: '100%',
+                marginTop: 10
+              }}
+            >
+              카메라 설정 적용
+            </button>
+
+            <div style={{
+              marginTop: 10,
+              fontSize: 11,
+              color: '#64748b',
+              lineHeight: 1.6,
+              fontFamily: 'JetBrains Mono, monospace'
+            }}>
+              <div>MODE : {status?.mode ?? 'OFFLINE'}</div>
+              <div>INDEX : {status?.camera_index ?? '--'}</div>
+              <div>PROFILE : {status?.camera_profile_name ?? '--'}</div>
+              <div>SIZE : {status?.image_width ?? '--'} × {status?.image_height ?? '--'}</div>
+              <div>RMS : {formatValue(status?.rms_reprojection_error, 4)}</div>
+              <div>CAMERA MOUNT : {status?.camera_mount_mode ?? '--'}</div>
+              <div>
+                CAMERA→CARRIAGE :{' '}
+                {status?.moving_camera_alignment_calibrated ? 'CALIBRATED' : 'NOT CALIBRATED'}
+              </div>
+            </div>
+          </div>
+
+          <div style={{
+            background: 'white',
+            border: '1px solid var(--hmi-border)',
+            padding: 14
+          }}>
+            <div className="section-header">
+              ArUco / Pose Monitor
+            </div>
+
+            <div style={{
+              display: 'flex',
+              gap: 8,
+              marginTop: 10
+            }}>
+              <button
+                className="btn-secondary"
+                onClick={loadDetection}
+              >
+                1회 검출
+              </button>
+              <button
+                className={autoDetect ? 'btn-primary' : 'btn-secondary'}
+                onClick={() => setAutoDetect(value => !value)}
+              >
+                AUTO {autoDetect ? 'ON' : 'OFF'}
+              </button>
+            </div>
+
+            <div style={{
+              marginTop: 10,
+              display: 'grid',
+              gridTemplateColumns: '1fr 1fr',
+              gap: 6,
+              fontSize: 12
+            }}>
+              {[
+                ['ArUco ID', detection?.aruco_id ?? '--'],
+                ['Tray', detection?.tray_label ?? detection?.tray_code ?? '--'],
+                ['Pose', detection?.pose_valid ? 'VALID' : 'INVALID'],
+                ['Pose Limit', detection?.pose_ok ? 'OK' : 'NG'],
+                ['Roll', `${formatValue(pose?.roll)} °`],
+                ['Pitch', `${formatValue(pose?.pitch)} °`],
+                ['Yaw', `${formatValue(pose?.yaw)} °`],
+                ['Image Yaw', `${formatValue(detection?.image_yaw_deg)} °`],
+                ['Grip X', `${formatValue(grip?.x)} mm`],
+                ['Grip Y', `${formatValue(grip?.y)} mm`],
+                ['Grip Z', `${formatValue(grip?.z)} mm`],
+                ['Correction X', `${formatValue(correction?.x)} mm`],
+                ['Correction Z', `${formatValue(correction?.z)} mm`],
+                ['Depth Error', `${formatValue(detection?.depth_error_mm)} mm`],
+                [
+                  'X/Z Correction',
+                  detection?.ready_for_stage_correction ? 'READY' : 'BLOCKED'
+                ],
+              ].map(([label, value]) => (
+                <div
+                  key={String(label)}
+                  style={{
+                    display: 'flex',
+                    gap: 8,
+                    justifyContent: 'space-between',
+                    borderBottom: '1px solid #e5e7eb',
+                    padding: '6px 2px'
+                  }}
+                >
+                  <span style={{ color: '#64748b' }}>{String(label)}</span>
+                  <strong style={{
+                    fontFamily: 'JetBrains Mono, monospace',
+                    textAlign: 'right'
+                  }}>
+                    {String(value)}
+                  </strong>
+                </div>
+              ))}
+            </div>
+
+            <div style={{
+              marginTop: 8,
+              fontSize: 11,
+              color: detection?.pose_ok === false
+                ? 'var(--hmi-red)'
+                : '#64748b'
+            }}>
+              {detection?.message ?? 'ArUco 마커를 카메라에 보여주세요.'}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style={{
+        background: 'white',
+        border: '1px solid var(--hmi-border)',
+        marginTop: 14,
+        padding: 16
+      }}>
+        <div className="section-header">
+          Camera Intrinsic Calibration
+        </div>
+
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: '1fr 1fr',
+          gap: 16,
+          marginTop: 10
+        }}>
+          <div>
+            <div style={{
+              fontSize: 12,
+              lineHeight: 1.8,
+              color: '#374151'
+            }}>
+              <div>
+                체커보드 :
+                {' '}
+                <strong>
+                  {calibration?.pattern?.inner_cols ?? 9}
+                  ×
+                  {calibration?.pattern?.inner_rows ?? 6}
+                </strong>
+                {' '}
+                inner corners
+              </div>
+              <div>
+                Square :
+                {' '}
+                <strong>
+                  {formatValue(calibration?.pattern?.square_mm ?? 25, 1)} mm
+                </strong>
+              </div>
+              <div>
+                Sample :
+                {' '}
+                <strong style={{
+                  color:
+                    sampleCount >= minimumSamples
+                      ? 'var(--hmi-green)'
+                      : 'var(--hmi-orange)'
+                }}>
+                  {sampleCount} / {minimumSamples}+
+                </strong>
+              </div>
+              <div>
+                Current Intrinsic :
+                {' '}
+                <strong>
+                  {calibration?.calibrated ? 'CALIBRATED' : 'NOT CALIBRATED'}
+                </strong>
+              </div>
+              <div>
+                Current RMS :
+                {' '}
+                <strong>
+                  {formatValue(calibration?.rms_reprojection_error, 4)}
+                </strong>
+              </div>
+            </div>
+
+            <div style={{
+              marginTop: 8,
+              fontSize: 11,
+              color: '#64748b',
+              lineHeight: 1.6
+            }}>
+              체커보드를 화면 전체의 서로 다른 위치·거리·각도로 이동시키면서
+              샘플을 추가하세요. 기존 calibration.py의 동일 알고리즘을 사용합니다.
+            </div>
+          </div>
+
+          <div style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 8,
+            justifyContent: 'center'
+          }}>
+            <button
+              className="btn-primary"
+              disabled={busy || !connected}
+              onClick={addSample}
+            >
+              + 현재 프레임 샘플 추가
+            </button>
+
+            <button
+              className="btn-secondary"
+              disabled={busy}
+              onClick={clearSamples}
+            >
+              샘플 초기화
+            </button>
+
+            <button
+              className="btn-green"
+              disabled={busy || sampleCount < minimumSamples}
+              onClick={runCalibration}
+            >
+              Intrinsic 계산 및 YAML 저장
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div style={{
+        marginTop: 12,
+        minHeight: 20,
+        fontSize: 12,
+        fontFamily: 'JetBrains Mono, monospace',
+        color:
+          message.startsWith('ERROR')
+            ? 'var(--hmi-red)'
+            : '#374151'
+      }}>
+        {message || 'READY'}
+      </div>
+
+      <div style={{ marginTop: 12 }}>
+        <button
+          className="btn-secondary"
+          onClick={onBack}
+        >
+          ← 메인으로
+        </button>
+      </div>
+    </div>
+  )
+}
+
+
 // ============================================================
 // SCREEN: SETTINGS / STAGE CONTROL
 // ============================================================
@@ -3804,6 +4612,9 @@ function StageControlScreen({
 }: {
   onBack: () => void
 }) {
+  const [settingsTab, setSettingsTab] =
+    useState<'STAGE' | 'CAMERA'>('STAGE')
+
   const [status, setStatus] =
     useState<any>(null)
 
@@ -3966,6 +4777,16 @@ function StageControlScreen({
         )
 
 
+  if (settingsTab === 'CAMERA') {
+    return (
+      <CameraControlScreen
+        onBack={onBack}
+        onStage={() => setSettingsTab('STAGE')}
+      />
+    )
+  }
+
+
   return (
     <div style={{
       flex: 1,
@@ -3981,7 +4802,23 @@ function StageControlScreen({
         fontSize: 16,
         letterSpacing: '0.08em'
       }}>
-        STAGE CONTROL
+        SETTINGS / STAGE CONTROL
+      </div>
+
+      <div style={{
+        display: 'flex',
+        gap: 8,
+        marginTop: 12
+      }}>
+        <button className="btn-primary" disabled>
+          STAGE / STM32
+        </button>
+        <button
+          className="btn-secondary"
+          onClick={() => setSettingsTab('CAMERA')}
+        >
+          CAMERA / VISION
+        </button>
       </div>
 
       <div style={{
@@ -5258,10 +6095,10 @@ export default function App() {
 
 
   // ============================================================
-  // Vision API 연결
+  // 부품 검수 API 연결
   //
-  // 지금: MockVisionAdapter
-  // 나중: 실제 YOLO / ArUco 구현체
+  // 현재: Mock Load Cell + Mock Part Vision
+  // 향후: 실제 Load Cell + OpenCV/YOLO Part Inspection Adapter
   // ============================================================
 
   const requestVisionCount = async (
@@ -5269,7 +6106,7 @@ export default function App() {
   ) => {
     try {
       const response = await fetch(
-        'http://127.0.0.1:8000/vision/count',
+        'http://127.0.0.1:8000/inspection/run',
         {
           method: 'POST',
           headers: {
@@ -5284,14 +6121,14 @@ export default function App() {
 
       if (!response.ok) {
         throw new Error(
-          `Vision count 서버 오류: ${response.status}`
+          `Inspection 서버 오류: ${response.status}`
         )
       }
 
       const result = await response.json()
 
       console.log(
-        '[VISION] 수량 확인:',
+        '[INSPECTION] 통합 검수:',
         result
       )
 
@@ -5299,7 +6136,7 @@ export default function App() {
 
     } catch (error) {
       console.error(
-        '[VISION] 수량 확인 실패:',
+        '[INSPECTION] 통합 검수 실패:',
         error
       )
 
@@ -7142,7 +7979,7 @@ export default function App() {
 
         {screen === 'CAMERA_CAPTURE' && (
           <CameraCaptureScreen
-            onUse={() => nav('ANALYZING')}
+            onUse={handleFileUpload}
             onCancel={() => nav('MAIN')}
           />
         )}

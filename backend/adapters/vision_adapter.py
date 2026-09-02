@@ -14,18 +14,14 @@ class VisionAdapter:
 
 
     def detect_tray_aruco(
-        self
+        self,
+        expected_tray_id: int | None = None,
     ):
         """
-        카메라에서 ArUco 마커를 읽어서
-        현재 Tray ID를 반환한다.
+        카메라에서 ArUco 마커를 읽어서 현재 Tray ID를 반환한다.
 
-        예:
-        {
-            "detected": True,
-            "tray_id": 5,
-            "aruco_id": 5
-        }
+        expected_tray_id가 주어지면 검출된 Tray가 작업 대상과
+        일치하는지도 함께 검증한다.
         """
         raise NotImplementedError
 

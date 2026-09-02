@@ -6,10 +6,15 @@ import numpy as np
 
 @dataclass(frozen=True)
 class TrayDefinition:
+    # marker_id is the only fixed system identity.
+    # All human-facing names and tray geometry remain configurable.
     marker_id: int
     tray_code: str
     marker_size_mm: float
     grip_offset_marker_mm: np.ndarray
+    display_name: str = ""
+    enabled: bool = True
+    geometry_calibrated: bool = False
 
 
 @dataclass(frozen=True)

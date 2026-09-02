@@ -15,6 +15,10 @@ class StageAdapter:
     def move_to_handoff(self):
         raise NotImplementedError
 
+    def move_relative(self, x_delta_mm: float, z_delta_mm: float):
+        """Vision correction: move X/Z by relative millimeter deltas."""
+        raise NotImplementedError
+
     def pause(self):
         raise NotImplementedError
 

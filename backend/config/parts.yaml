@@ -1,0 +1,128 @@
+# Part inspection / load-cell calibration database.
+#
+# IMPORTANT
+# - Hardware-dependent values intentionally remain null while the real camera
+#   and load cell are unavailable.
+# - Set calibrated=true only after measurements are taken on the real system.
+# - ArUco tray identity is managed separately by the tray-vision configuration.
+
+parts:
+  B001:
+    display_name: "육각볼트"
+    spec: "M6X20"
+    tray_id: 1
+    loadcell:
+      calibrated: false
+      unit_weight_g: null
+      empty_tray_weight_g: null
+      tolerance_g: null
+    vision:
+      calibrated: false
+      class_name: "bolt_hex_m6x20"
+      roi: null
+      min_area_px: null
+      max_area_px: null
+      min_width_px: null
+      max_width_px: null
+      min_height_px: null
+      max_height_px: null
+
+  B002:
+    display_name: "육각렌치볼트"
+    spec: "M5X15"
+    tray_id: 2
+    loadcell:
+      calibrated: false
+      unit_weight_g: null
+      empty_tray_weight_g: null
+      tolerance_g: null
+    vision:
+      calibrated: false
+      class_name: "socket_bolt_m5x15"
+      roi: null
+      min_area_px: null
+      max_area_px: null
+      min_width_px: null
+      max_width_px: null
+      min_height_px: null
+      max_height_px: null
+
+  S001:
+    display_name: "십자머리나사"
+    spec: "M4X12"
+    tray_id: 3
+    loadcell:
+      calibrated: false
+      unit_weight_g: null
+      empty_tray_weight_g: null
+      tolerance_g: null
+    vision:
+      calibrated: false
+      class_name: "phillips_screw_m4x12"
+      roi: null
+      min_area_px: null
+      max_area_px: null
+      min_width_px: null
+      max_width_px: null
+      min_height_px: null
+      max_height_px: null
+
+  N001:
+    display_name: "육각너트"
+    spec: "M6"
+    tray_id: 4
+    loadcell:
+      calibrated: false
+      unit_weight_g: null
+      empty_tray_weight_g: null
+      tolerance_g: null
+    vision:
+      calibrated: false
+      class_name: "hex_nut_m6"
+      roi: null
+      min_area_px: null
+      max_area_px: null
+      min_width_px: null
+      max_width_px: null
+      min_height_px: null
+      max_height_px: null
+
+  W001:
+    display_name: "평와셔"
+    spec: "M6"
+    tray_id: 5
+    loadcell:
+      calibrated: false
+      unit_weight_g: null
+      empty_tray_weight_g: null
+      tolerance_g: null
+    vision:
+      calibrated: false
+      class_name: "flat_washer_m6"
+      roi: null
+      min_area_px: null
+      max_area_px: null
+      min_width_px: null
+      max_width_px: null
+      min_height_px: null
+      max_height_px: null
+
+  W002:
+    display_name: "스프링와셔"
+    spec: "M6"
+    tray_id: 6
+    loadcell:
+      calibrated: false
+      unit_weight_g: null
+      empty_tray_weight_g: null
+      tolerance_g: null
+    vision:
+      calibrated: false
+      class_name: "spring_washer_m6"
+      roi: null
+      min_area_px: null
+      max_area_px: null
+      min_width_px: null
+      max_width_px: null
+      min_height_px: null
+      max_height_px: null

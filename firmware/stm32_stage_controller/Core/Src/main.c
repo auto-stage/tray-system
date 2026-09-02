@@ -176,6 +176,29 @@ typedef struct
 #define STAGE_HOME_ACCEL_MM_S2             20.0f
 #define STAGE_HOME_BACKOFF_MM              3.0f
 
+/* HX711 #1 (캐리지 로드셀)
+ * DOUT/DT = PG0 (input), SCK/CLK = PG1 (output)
+ * Channel A, Gain 128 사용 */
+#define HX711_1_DOUT_GPIO_PORT             GPIOG
+#define HX711_1_DOUT_GPIO_PIN              GPIO_PIN_0
+#define HX711_1_SCK_GPIO_PORT              GPIOG
+#define HX711_1_SCK_GPIO_PIN               GPIO_PIN_1
+#define HX711_1_READY_TIMEOUT_MS            200U
+
+/* HX711 #1 calibration */
+#define HX711_1_TARE_RAW                    60834.7f
+#define HX711_1_COUNT_PER_G                 668.7673f
+
+
+/* MG996R gripper servo - PA0 / TIM2_CH1 */
+#define SERVO_GPIO_PORT                     GPIOA
+#define SERVO_GPIO_PIN                      GPIO_PIN_0
+#define SERVO_GPIO_AF                       GPIO_AF1_TIM2
+
+#define SERVO_MIN_PULSE_US                  500U
+#define SERVO_CENTER_PULSE_US               1500U
+#define SERVO_MAX_PULSE_US                  2500U
+
 #define STAGE_CONTROL_PERIOD_MS            10U
 #define STAGE_RX_RING_SIZE                 512U
 #define STAGE_LINE_SIZE                    192U
@@ -190,6 +213,7 @@ typedef struct
 /* Private variables ---------------------------------------------------------*/
 
 TIM_HandleTypeDef htim1;
+TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim8;
 
 UART_HandleTypeDef huart3;
@@ -252,6 +276,183 @@ static bool Stage_InputActive(GPIO_TypeDef *port, uint16_t pin,
                               GPIO_PinState active_level)
 {
   return (HAL_GPIO_ReadPin(port, pin) == active_level);
+}
+
+/* --------------------------------------------------------------------------
+ * HX711 #1 - 캐리지 로드셀
+ * -------------------------------------------------------------------------- */
+
+/* HX711은 변환 데이터가 준비되면 DOUT을 LOW로 내립니다. */
+static bool HX711_1_IsReady(void)
+{
+  return (HAL_GPIO_ReadPin(HX711_1_DOUT_GPIO_PORT,
+                           HX711_1_DOUT_GPIO_PIN) == GPIO_PIN_RESET);
+}
+
+/* Channel A / Gain 128 기준 24-bit signed RAW 값을 읽습니다.
+ * 반환값 INT32_MIN은 DOUT ready timeout을 의미합니다.
+ *
+ * SCK가 HIGH인 채로 오래 유지되면 HX711 power-down 조건이 될 수 있으므로,
+ * 각 clock의 SCK HIGH 구간만 짧게 IRQ를 막아 HIGH 시간을 보장합니다.
+ */
+static int32_t HX711_1_ReadRaw(void)
+{
+  uint32_t value = 0U;
+  uint32_t start_ms = HAL_GetTick();
+  uint32_t primask;
+  uint32_t i;
+
+  while (!HX711_1_IsReady())
+  {
+    if ((uint32_t)(HAL_GetTick() - start_ms) >= HX711_1_READY_TIMEOUT_MS)
+    {
+      return INT32_MIN;
+    }
+  }
+
+  for (i = 0U; i < 24U; ++i)
+  {
+    /* SCK HIGH 구간만 아주 짧게 보호합니다.
+     * STEP/UART IRQ는 SCK LOW 동안 계속 처리될 수 있습니다. */
+    primask = __get_PRIMASK();
+    __disable_irq();
+
+    HAL_GPIO_WritePin(HX711_1_SCK_GPIO_PORT,
+                      HX711_1_SCK_GPIO_PIN,
+                      GPIO_PIN_SET);
+
+    value <<= 1U;
+    if (HAL_GPIO_ReadPin(HX711_1_DOUT_GPIO_PORT,
+                         HX711_1_DOUT_GPIO_PIN) == GPIO_PIN_SET)
+    {
+      value |= 1U;
+    }
+
+    HAL_GPIO_WritePin(HX711_1_SCK_GPIO_PORT,
+                      HX711_1_SCK_GPIO_PIN,
+                      GPIO_PIN_RESET);
+
+    if (primask == 0U)
+    {
+      __enable_irq();
+    }
+  }
+
+  /* 25번째 pulse: 다음 변환을 Channel A / Gain 128로 설정 */
+  primask = __get_PRIMASK();
+  __disable_irq();
+
+  HAL_GPIO_WritePin(HX711_1_SCK_GPIO_PORT,
+                    HX711_1_SCK_GPIO_PIN,
+                    GPIO_PIN_SET);
+  HAL_GPIO_WritePin(HX711_1_SCK_GPIO_PORT,
+                    HX711_1_SCK_GPIO_PIN,
+                    GPIO_PIN_RESET);
+
+  if (primask == 0U)
+  {
+    __enable_irq();
+  }
+
+  /* HX711 24-bit two's-complement -> int32_t sign extension */
+  if ((value & 0x00800000U) != 0U)
+  {
+    value |= 0xFF000000U;
+  }
+
+  return (int32_t)value;
+}
+
+
+/* --------------------------------------------------------------------------
+ * MG996R gripper servo - PA0 / TIM2_CH1
+ * 50 Hz PWM, 1000~2000 us
+ * -------------------------------------------------------------------------- */
+
+static bool Servo_Initialized = false;
+
+static void Servo_Init(void)
+{
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  uint32_t pclk1;
+  uint32_t tim_clk;
+  uint32_t prescaler;
+
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_TIM2_CLK_ENABLE();
+
+  GPIO_InitStruct.Pin = SERVO_GPIO_PIN;
+  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  GPIO_InitStruct.Alternate = SERVO_GPIO_AF;
+  HAL_GPIO_Init(SERVO_GPIO_PORT, &GPIO_InitStruct);
+
+  pclk1 = HAL_RCC_GetPCLK1Freq();
+
+  if ((RCC->CFGR & RCC_CFGR_PPRE1) == RCC_HCLK_DIV1)
+  {
+    tim_clk = pclk1;
+  }
+  else
+  {
+    tim_clk = pclk1 * 2U;
+  }
+
+  /* Timer counter = 1 MHz -> 1 count = 1 us */
+  prescaler = (tim_clk / 1000000U) - 1U;
+
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = prescaler;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 20000U - 1U;      /* 20 ms = 50 Hz */
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+
+  if (HAL_TIM_PWM_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = SERVO_CENTER_PULSE_US;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+
+  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  if (HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  Servo_Initialized = true;
+}
+
+static void Servo_SetAngle(uint32_t angle_deg)
+{
+  uint32_t pulse_us;
+
+  if (!Servo_Initialized)
+  {
+    Servo_Init();
+  }
+
+  if (angle_deg > 180U)
+  {
+    angle_deg = 180U;
+  }
+
+  pulse_us =
+      SERVO_MIN_PULSE_US +
+      ((SERVO_MAX_PULSE_US - SERVO_MIN_PULSE_US) * angle_deg) / 180U;
+
+  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, pulse_us);
 }
 
 static bool Stage_MinActive(const StageAxis *axis)
@@ -1109,6 +1310,66 @@ static void StageProtocol_HandleLine(char *line)
     StageProtocol_SendStatus();
     return;
   }
+  if (strcmp(command, "LOAD") == 0)
+  {
+    int32_t raw = HX711_1_ReadRaw();
+    char output[96];
+
+    if (raw == INT32_MIN)
+    {
+      StageProtocol_SendText("ERR HX711_TIMEOUT\r\n");
+    }
+    else
+    {
+      float weight_g =
+          ((float)raw - HX711_1_TARE_RAW) / HX711_1_COUNT_PER_G;
+
+      int32_t weight_x10 = (int32_t)lroundf(weight_g * 10.0f);
+      int32_t weight_abs = (weight_x10 < 0) ? -weight_x10 : weight_x10;
+
+      (void)snprintf(
+          output,
+          sizeof(output),
+          "LOAD_RAW %ld WEIGHT_G %s%ld.%01ld\r\n",
+          (long)raw,
+          (weight_x10 < 0) ? "-" : "",
+          (long)(weight_abs / 10),
+          (long)(weight_abs % 10));
+
+      StageProtocol_SendText(output);
+    }
+    return;
+  }
+  if (strcmp(command, "SERVO") == 0)
+  {
+    char *arg = strtok_r(NULL, " \t", &save);
+    char output[64];
+    long angle;
+
+    if (arg == NULL)
+    {
+      StageProtocol_SendText("ERR SERVO_PARAM\r\n");
+      return;
+    }
+
+    angle = strtol(arg, NULL, 10);
+
+    if ((angle < 0L) || (angle > 180L))
+    {
+      StageProtocol_SendText("ERR SERVO_RANGE\r\n");
+      return;
+    }
+
+    Servo_SetAngle((uint32_t)angle);
+
+    (void)snprintf(output,
+                   sizeof(output),
+                   "OK SERVO %ld\r\n",
+                   angle);
+    StageProtocol_SendText(output);
+    return;
+  }
+
   if (strcmp(command, "ESTOP") == 0)
   {
     Stage_EStop();
@@ -1628,6 +1889,22 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
 
 /* USER CODE BEGIN MX_GPIO_Init_2 */
+  /* HX711 #1: PG0=DOUT(input), PG1=SCK(output, idle LOW) */
+  GPIO_InitStruct.Pin = HX711_1_DOUT_GPIO_PIN;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(HX711_1_DOUT_GPIO_PORT, &GPIO_InitStruct);
+
+  HAL_GPIO_WritePin(HX711_1_SCK_GPIO_PORT,
+                    HX711_1_SCK_GPIO_PIN,
+                    GPIO_PIN_RESET);
+
+  GPIO_InitStruct.Pin = HX711_1_SCK_GPIO_PIN;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(HX711_1_SCK_GPIO_PORT, &GPIO_InitStruct);
+
 #if STAGE_USE_LIMIT_INPUTS
   /* NC 리미트 4개: 정상 LOW, 작동/단선 HIGH */
   GPIO_InitStruct.Pin = GPIO_PIN_12|GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15;
