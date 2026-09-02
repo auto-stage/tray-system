@@ -12,3 +12,6 @@ pyserial
 # ArUco backend integration
 opencv-contrib-python>=4.9
 PyYAML>=6.0
+
+# YOLO Part Inspection
+ultralytics==8.3.239

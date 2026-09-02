@@ -1,0 +1,27 @@
+# Role-level camera configuration. Physical intrinsic/capture values remain in
+# the existing camera_*.yaml profiles. Environment variables keep precedence
+# for backward-compatible deployment overrides.
+
+cameras:
+  aruco:
+    role: "aruco_stage"
+    enabled: true
+    profile: "modules/aruco_tray_vision/config/camera_c525.yaml"
+
+  work_order:
+    role: "work_order_inspection"
+    enabled: true
+    profile: "modules/aruco_tray_vision/config/camera_c920.yaml"
+    ocr:
+      enabled: true
+      roi: null
+    inspection:
+      enabled: true
+      detector: "opencv_baseline"
+      roi: null
+      debug_overlay: true
+      classifier_profile: null
+      yolo:
+        confidence_threshold: 0.25
+        max_inference_fps: 2.0
+        dataset_root: "data/part_yolo"

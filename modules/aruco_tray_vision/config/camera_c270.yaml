@@ -1,0 +1,28 @@
+calibrated: true
+camera_name: Logitech C270
+camera_device: /dev/v4l/by-id/usb-046d_0825_8EE14010-video-index0
+camera_index_hint: 0
+capture:
+  width: 1280
+  height: 720
+  fps: 30
+  fourcc: MJPG
+image_width: 1280
+image_height: 720
+rms_reprojection_error: 0.6592492986069917
+camera_matrix:
+- - 1435.9675949281032
+  - 0.0
+  - 610.0932983696126
+- - 0.0
+  - 1442.035818328672
+  - 371.40799628603236
+- - 0.0
+  - 0.0
+  - 1.0
+distortion_coefficients:
+- 0.04216234383375818
+- 0.5310253551296232
+- 0.0011340473378162702
+- -0.006553799129369691
+- -1.404022698259925

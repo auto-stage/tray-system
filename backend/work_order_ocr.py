@@ -11,6 +11,7 @@ import easyocr
 
 from PIL import Image
 from rapidfuzz import fuzz
+from parts_db import get_ocr_part_db
 
 
 warnings.filterwarnings("ignore")
@@ -46,44 +47,7 @@ RENDERED_IMAGE = "work_order_page1.png"
 # 2. 부품 DB
 # ============================================================
 
-part_db = {
-
-    "B001": {
-        "name": "육각볼트",
-        "spec": "M6X20",
-        "tray": 1
-    },
-
-    "B002": {
-        "name": "육각렌치볼트",
-        "spec": "M5X15",
-        "tray": 2
-    },
-
-    "S001": {
-        "name": "십자머리나사",
-        "spec": "M4X12",
-        "tray": 3
-    },
-
-    "N001": {
-        "name": "육각너트",
-        "spec": "M6",
-        "tray": 4
-    },
-
-    "W001": {
-        "name": "평와셔",
-        "spec": "M6",
-        "tray": 5
-    },
-
-    "W002": {
-        "name": "스프링와셔",
-        "spec": "M6",
-        "tray": 6
-    }
-}
+part_db = get_ocr_part_db()
 
 
 # EasyOCR 모델은 필요할 때만 불러옴
@@ -1178,9 +1142,13 @@ def calculate_candidate(
 
     if ocr_name:
 
-        scores["name"] = fuzz.ratio(
-            ocr_name,
-            db_part["name"]
+        names = [
+            db_part["name"],
+            *db_part.get("aliases", []),
+        ]
+        scores["name"] = max(
+            fuzz.ratio(ocr_name, name)
+            for name in names
         )
 
     else:
@@ -1871,6 +1839,10 @@ for parsed in parsed_rows:
         ),
 
         "part_no": best["code"],
+
+        "class_key": best[
+            "part"
+        ]["class_key"],
 
         "name": best[
             "part"

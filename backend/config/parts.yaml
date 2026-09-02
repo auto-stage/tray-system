@@ -1,128 +1,91 @@
-# Part inspection / load-cell calibration database.
+# Canonical part catalog for OCR, inspection, API, and UI.
 #
-# IMPORTANT
-# - Hardware-dependent values intentionally remain null while the real camera
-#   and load cell are unavailable.
-# - Set calibrated=true only after measurements are taken on the real system.
-# - ArUco tray identity is managed separately by the tray-vision configuration.
+# Physical dimensions and weight intentionally remain null until measured.
+# OpenCV reference features are collected from the real fixed camera and are
+# stored separately; no guessed classifier thresholds belong in this file.
 
 parts:
-  B001:
-    display_name: "육각볼트"
-    spec: "M6X20"
-    tray_id: 1
-    loadcell:
-      calibrated: false
-      unit_weight_g: null
-      empty_tray_weight_g: null
-      tolerance_g: null
-    vision:
-      calibrated: false
-      class_name: "bolt_hex_m6x20"
-      roi: null
-      min_area_px: null
-      max_area_px: null
-      min_width_px: null
-      max_width_px: null
-      min_height_px: null
-      max_height_px: null
-
-  B002:
-    display_name: "육각렌치볼트"
-    spec: "M5X15"
-    tray_id: 2
-    loadcell:
-      calibrated: false
-      unit_weight_g: null
-      empty_tray_weight_g: null
-      tolerance_g: null
-    vision:
-      calibrated: false
-      class_name: "socket_bolt_m5x15"
-      roi: null
-      min_area_px: null
-      max_area_px: null
-      min_width_px: null
-      max_width_px: null
-      min_height_px: null
-      max_height_px: null
-
-  S001:
-    display_name: "십자머리나사"
-    spec: "M4X12"
-    tray_id: 3
-    loadcell:
-      calibrated: false
-      unit_weight_g: null
-      empty_tray_weight_g: null
-      tolerance_g: null
-    vision:
-      calibrated: false
-      class_name: "phillips_screw_m4x12"
-      roi: null
-      min_area_px: null
-      max_area_px: null
-      min_width_px: null
-      max_width_px: null
-      min_height_px: null
-      max_height_px: null
-
-  N001:
-    display_name: "육각너트"
-    spec: "M6"
+  flange_nut:
+    yolo_class_id: 0
+    display_name: "플랜지 너트"
+    ocr_aliases: ["플랜지 너트", "플랜지너트"]
+    part_no: "N001"
     tray_id: 4
-    loadcell:
-      calibrated: false
-      unit_weight_g: null
-      empty_tray_weight_g: null
-      tolerance_g: null
+    nominal_size: null
+    inner_diameter_mm: null
+    outer_diameter_mm: null
+    height_mm: null
+    weight_g: null
     vision:
       calibrated: false
-      class_name: "hex_nut_m6"
       roi: null
-      min_area_px: null
-      max_area_px: null
-      min_width_px: null
-      max_width_px: null
-      min_height_px: null
-      max_height_px: null
 
-  W001:
-    display_name: "평와셔"
-    spec: "M6"
+  hex_bolt:
+    yolo_class_id: 1
+    display_name: "육각 볼트"
+    ocr_aliases: ["육각 볼트", "육각볼트"]
+    part_no: "B001"
+    tray_id: 1
+    nominal_size: null
+    diameter_mm: null
+    length_mm: null
+    weight_g: null
+    vision:
+      calibrated: false
+      roi: null
+
+  socket_head_bolt:
+    yolo_class_id: 2
+    display_name: "렌치 볼트"
+    ocr_aliases: ["렌치 볼트", "렌치볼트", "육각 렌치 볼트", "육각렌치볼트"]
+    part_no: "B002"
+    tray_id: 2
+    nominal_size: null
+    diameter_mm: null
+    length_mm: null
+    weight_g: null
+    vision:
+      calibrated: false
+      roi: null
+
+  corner_bracket:
+    yolo_class_id: 3
+    display_name: "코너 브라켓"
+    ocr_aliases: ["코너 브라켓", "코너브라켓"]
+    part_no: "S001"
+    tray_id: 3
+    width_mm: null
+    height_mm: null
+    thickness_mm: null
+    weight_g: null
+    vision:
+      calibrated: false
+      roi: null
+
+  straight_connector:
+    yolo_class_id: 4
+    display_name: "직선 연결구"
+    ocr_aliases: ["직선 연결구", "직선연결구"]
+    part_no: "W001"
     tray_id: 5
-    loadcell:
-      calibrated: false
-      unit_weight_g: null
-      empty_tray_weight_g: null
-      tolerance_g: null
+    length_mm: null
+    width_mm: null
+    height_mm: null
+    weight_g: null
     vision:
       calibrated: false
-      class_name: "flat_washer_m6"
       roi: null
-      min_area_px: null
-      max_area_px: null
-      min_width_px: null
-      max_width_px: null
-      min_height_px: null
-      max_height_px: null
 
-  W002:
-    display_name: "스프링와셔"
-    spec: "M6"
+  l_bracket:
+    yolo_class_id: 5
+    display_name: "L형 브라켓"
+    ocr_aliases: ["L형 브라켓", "L형브라켓", "엘형 브라켓", "엘형브라켓"]
+    part_no: "W002"
     tray_id: 6
-    loadcell:
-      calibrated: false
-      unit_weight_g: null
-      empty_tray_weight_g: null
-      tolerance_g: null
+    leg_length_mm: null
+    width_mm: null
+    thickness_mm: null
+    weight_g: null
     vision:
       calibrated: false
-      class_name: "spring_washer_m6"
       roi: null
-      min_area_px: null
-      max_area_px: null
-      min_width_px: null
-      max_width_px: null
-      min_height_px: null
-      max_height_px: null

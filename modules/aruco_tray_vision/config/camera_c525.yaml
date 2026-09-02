@@ -1,0 +1,30 @@
+calibrated: true
+camera_name: Logitech HD Webcam C525
+camera_device: /dev/v4l/by-id/usb-046d_HD_Webcam_C525_B6746330-video-index0
+camera_index_hint: 1
+capture:
+  width: 1280
+  height: 720
+  fps: 30
+  fourcc: MJPG
+  autofocus: false
+  focus_absolute: 50
+image_width: 1280
+image_height: 720
+rms_reprojection_error: 0.5461825496250424
+camera_matrix:
+- - 1106.0368760018587
+  - 0.0
+  - 603.9941430658467
+- - 0.0
+  - 1108.5430019228459
+  - 352.6004785350811
+- - 0.0
+  - 0.0
+  - 1.0
+distortion_coefficients:
+- 0.1265677170377957
+- -0.41218541529703273
+- 0.003327725157812933
+- -0.009729368147408919
+- 1.3496389694014446

@@ -14,6 +14,28 @@ from adapters.mock_part_inspection_adapter import MockPartInspectionAdapter
 from services.inspection_service import InspectionService
 
 
+class SingleObjectOnlyVision:
+    def get_status(self):
+        return {
+            "mock": False,
+            "sample_counts": {},
+            "counting_validated": False,
+        }
+
+    def inspect(self, *, class_key, part_config, expected_count=None):
+        return {
+            "success": True,
+            "mock": False,
+            "status": "classified",
+            "class_key": class_key,
+            "detected_class": class_key,
+            "detected_count": 1,
+            "count": 1,
+            "counting_validated": False,
+            "parts": [],
+        }
+
+
 class InspectionServiceTest(unittest.TestCase):
     def setUp(self) -> None:
         self.service = InspectionService(
@@ -50,6 +72,32 @@ class InspectionServiceTest(unittest.TestCase):
         )
         self.assertFalse(result["success"])
         self.assertEqual(result["error"], "INVALID_EXPECTED_QUANTITY")
+
+    def test_mock_cannot_register_reference_or_validation_trial(self) -> None:
+        result = self.service.debug_action(
+            action="capture_reference",
+            class_key="hex_bolt",
+        )
+        self.assertFalse(result["success"])
+        self.assertTrue(result["mock"])
+        self.assertEqual(result["error"], "REAL_CAMERA_REQUIRED")
+        self.assertFalse(
+            self.service.get_debug_status()["inspection"]["validation"][
+                "mock_results_included"
+            ]
+        )
+
+    def test_multi_part_count_is_unknown_until_counting_is_validated(self) -> None:
+        service = InspectionService(
+            loadcell=MockLoadCellAdapter(),
+            part_vision=SingleObjectOnlyVision(),
+            parts_config_path=BACKEND_DIR / "config" / "parts.yaml",
+        )
+        result = service.run(part_no="B001", expected_quantity=5)
+        self.assertTrue(result["success"])
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["status"], "unknown")
+        self.assertIn("COUNTING_NOT_VALIDATED", result["reasons"])
 
 
 if __name__ == "__main__":
