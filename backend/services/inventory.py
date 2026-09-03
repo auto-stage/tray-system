@@ -12,8 +12,7 @@ INVENTORY_PATH = BASE_DIR / "data" / "inventory.json"
 TRANSACTION_PATH = BASE_DIR / "data" / "inventory_transactions.json"
 PARTS_CONFIG_PATH = BASE_DIR / "config" / "parts.yaml"
 
-MAX_STOCK = 30
-LOW_STOCK_THRESHOLD = 6
+LOW_STOCK_RATIO = 0.20
 
 
 def _read_json(path: Path, default: Any):
@@ -60,9 +59,13 @@ def get_all_inventory():
     """
     UI용 전체 재고 조회.
 
-    - 최대 재고: 30개
-    - 30개 = 100%
-    - 6개 이하 = LOW STOCK
+    inventory.json의 각 품목은 다음 값을 가진다.
+
+    - stock: 현재 재고 수량
+    - max_stock: 해당 부품의 기준 최대/총 보유 수량
+
+    LOW STOCK 기준은 max_stock의 20% 이하이다.
+    예: max_stock=30이면 6개 이하에서 LOW STOCK.
     """
     inventory = load_inventory()
     parts = load_parts_catalog(PARTS_CONFIG_PATH)
@@ -75,17 +78,40 @@ def get_all_inventory():
 
     for part_no, item in inventory.items():
         part_config = parts_by_no.get(str(part_no))
-        stock = int(
-            item.get("stock", 0)
-        )
 
-        # 비정상 값 방어
-        stock = max(
-            0,
-            min(
-                stock,
-                MAX_STOCK,
+        try:
+            stock = int(item.get("stock", 0))
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                f"{part_no}.stock은 0 이상의 정수여야 합니다."
+            ) from error
+
+        try:
+            max_stock = int(item["max_stock"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError(
+                f"{part_no}.max_stock은 1 이상의 정수로 등록해야 합니다."
+            ) from error
+
+        if stock < 0:
+            raise ValueError(
+                f"{part_no}.stock은 0 이상이어야 합니다: {stock}"
             )
+
+        if max_stock <= 0:
+            raise ValueError(
+                f"{part_no}.max_stock은 1 이상이어야 합니다: {max_stock}"
+            )
+
+        if stock > max_stock:
+            raise ValueError(
+                f"{part_no}.stock이 max_stock보다 클 수 없습니다: "
+                f"stock={stock}, max_stock={max_stock}"
+            )
+
+        low_stock_threshold = max(
+            1,
+            int(max_stock * LOW_STOCK_RATIO),
         )
 
         metadata = {}
@@ -104,20 +130,15 @@ def get_all_inventory():
             **item,
             **metadata,
             "stock": stock,
-            "max_stock": MAX_STOCK,
+            "max_stock": max_stock,
             "percent": min(
-                round(
-                    (
-                        stock
-                        / MAX_STOCK
-                    )
-                    * 100
-                ),
+                round((stock / max_stock) * 100),
                 100,
             ),
+            "low_stock_threshold": low_stock_threshold,
             "status": (
                 "LOW STOCK"
-                if stock <= LOW_STOCK_THRESHOLD
+                if stock <= low_stock_threshold
                 else "READY"
             ),
         }

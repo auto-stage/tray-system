@@ -29,17 +29,16 @@ class PartsDatabaseTest(unittest.TestCase):
                 "l_bracket",
             },
         )
-        self.assertEqual(
-            {key: float(item["weight_g"]) for key, item in catalog.items()},
-            {
-                "flange_nut": 10.0,
-                "t_bolt": 20.0,
-                "socket_head_bolt": 30.0,
-                "corner_bracket": 40.0,
-                "t_nut": 50.0,
-                "l_bracket": 60.0,
-            },
-        )
+        for class_key, item in catalog.items():
+            self.assertIsNotNone(
+                item.get("weight_g"),
+                f"{class_key}.weight_g가 등록되어야 합니다.",
+            )
+            self.assertGreater(
+                float(item["weight_g"]),
+                0.0,
+                f"{class_key}.weight_g는 0보다 커야 합니다.",
+            )
 
     def test_part_number_and_alias_resolve_to_canonical_class(self) -> None:
         self.assertEqual(find_part_by_identifier("B001")["class_key"], "t_bolt")

@@ -18,7 +18,7 @@ parts:
     inner_diameter_mm: null
     outer_diameter_mm: null
     height_mm: null
-    weight_g: 10.0  # TEMP: Mock 검수용, 실기 전 실측값으로 교체
+    weight_g: 4.0  # TEMP: Mock 검수용, 실기 전 실측값으로 교체
     vision:
       calibrated: false
       roi: null
@@ -32,7 +32,7 @@ parts:
     nominal_size: null
     diameter_mm: null
     length_mm: null
-    weight_g: 20.0  # TEMP: Mock 검수용, 실기 전 실측값으로 교체
+    weight_g: 11.0  # TEMP: Mock 검수용, 실기 전 실측값으로 교체
     vision:
       calibrated: false
       roi: null
@@ -46,7 +46,7 @@ parts:
     nominal_size: null
     diameter_mm: null
     length_mm: null
-    weight_g: 30.0  # TEMP: Mock 검수용, 실기 전 실측값으로 교체
+    weight_g: 8.0  # TEMP: Mock 검수용, 실기 전 실측값으로 교체
     vision:
       calibrated: false
       roi: null
@@ -60,7 +60,7 @@ parts:
     width_mm: null
     height_mm: null
     thickness_mm: null
-    weight_g: 40.0  # TEMP: Mock 검수용, 실기 전 실측값으로 교체
+    weight_g: 7.0  # TEMP: Mock 검수용, 실기 전 실측값으로 교체
     vision:
       calibrated: false
       roi: null
@@ -74,7 +74,7 @@ parts:
     length_mm: null
     width_mm: null
     height_mm: null
-    weight_g: 50.0  # TEMP: Mock 검수용, 실기 전 실측값으로 교체
+    weight_g: 7.0  # TEMP: Mock 검수용, 실기 전 실측값으로 교체
     vision:
       calibrated: false
       roi: null
@@ -88,7 +88,7 @@ parts:
     leg_length_mm: null
     width_mm: null
     thickness_mm: null
-    weight_g: 60.0  # TEMP: Mock 검수용, 실기 전 실측값으로 교체
+    weight_g: 8.5  # TEMP: Mock 검수용, 실기 전 실측값으로 교체
     vision:
       calibrated: false
       roi: null
