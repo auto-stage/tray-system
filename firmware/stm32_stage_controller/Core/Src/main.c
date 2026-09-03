@@ -199,8 +199,8 @@ typedef struct
  */
 #define HX711_2_DOUT_GPIO_PORT              GPIOG
 #define HX711_2_DOUT_GPIO_PIN               GPIO_PIN_3
-#define HX711_2_SCK_GPIO_PORT               GPIOG
-#define HX711_2_SCK_GPIO_PIN                GPIO_PIN_4
+#define HX711_2_SCK_GPIO_PORT               GPIOF
+#define HX711_2_SCK_GPIO_PIN                GPIO_PIN_7
 #define HX711_2_READY_TIMEOUT_MS            200U
 #define HX711_2_DEFAULT_SAMPLES             10U
 
@@ -1691,15 +1691,20 @@ static void StageProtocol_HandleLine(char *line)
       HX711_2_TareRaw = average_raw;
       HX711_2_TareValid = true;
 
-      /* 영점이 바뀌면 이전 calibration은 더 이상 신뢰하지 않는다. */
-      HX711_2_CalValid = false;
-      HX711_2_CountPerG = 0.0f;
+      /* TARE는 영점(offset)만 갱신한다.
+       * 기존 calibration scale(COUNT_PER_G)은 유지한다. */
+      int32_t tare_x10 =
+          (int32_t)lroundf(HX711_2_TareRaw * 10.0f);
+      int32_t tare_abs =
+          (tare_x10 < 0) ? -tare_x10 : tare_x10;
 
       (void)snprintf(
           output,
           sizeof(output),
-          "OK FINAL_LOAD TARE RAW %.1f SAMPLES %lu\r\n",
-          (double)HX711_2_TareRaw,
+          "OK FINAL_LOAD TARE RAW %s%ld.%01ld SAMPLES %lu\r\n",
+          (tare_x10 < 0) ? "-" : "",
+          (long)(tare_abs / 10),
+          (long)(tare_abs % 10),
           (unsigned long)HX711_2_DEFAULT_SAMPLES);
 
       StageProtocol_SendText(output);
@@ -1765,12 +1770,26 @@ static void StageProtocol_HandleLine(char *line)
       HX711_2_CountPerG = count_per_g;
       HX711_2_CalValid = true;
 
+      int32_t known_x10 =
+          (int32_t)lroundf(known_weight_g * 10.0f);
+      int32_t known_abs =
+          (known_x10 < 0) ? -known_x10 : known_x10;
+
+      int32_t count_x10000 =
+          (int32_t)lroundf(HX711_2_CountPerG * 10000.0f);
+      int32_t count_abs =
+          (count_x10000 < 0) ? -count_x10000 : count_x10000;
+
       (void)snprintf(
           output,
           sizeof(output),
-          "OK FINAL_LOAD CAL WEIGHT_G %.1f COUNT_PER_G %.4f\r\n",
-          (double)known_weight_g,
-          (double)HX711_2_CountPerG);
+          "OK FINAL_LOAD CAL WEIGHT_G %s%ld.%01ld COUNT_PER_G %s%ld.%04ld\r\n",
+          (known_x10 < 0) ? "-" : "",
+          (long)(known_abs / 10),
+          (long)(known_abs % 10),
+          (count_x10000 < 0) ? "-" : "",
+          (long)(count_abs / 10000),
+          (long)(count_abs % 10000));
 
       StageProtocol_SendText(output);
       return;
@@ -1808,12 +1827,26 @@ static void StageProtocol_HandleLine(char *line)
           (average_raw - HX711_2_TareRaw)
           / HX711_2_CountPerG;
 
+      int32_t weight_x10 =
+          (int32_t)lroundf(weight_g * 10.0f);
+      int32_t weight_abs =
+          (weight_x10 < 0) ? -weight_x10 : weight_x10;
+
+      int32_t raw_x10 =
+          (int32_t)lroundf(average_raw * 10.0f);
+      int32_t raw_abs =
+          (raw_x10 < 0) ? -raw_x10 : raw_x10;
+
       (void)snprintf(
           output,
           sizeof(output),
-          "FINAL_LOAD WEIGHT_G %.1f RAW_AVG %.1f SAMPLES %lu\r\n",
-          (double)weight_g,
-          (double)average_raw,
+          "FINAL_LOAD WEIGHT_G %s%ld.%01ld RAW_AVG %s%ld.%01ld SAMPLES %lu\r\n",
+          (weight_x10 < 0) ? "-" : "",
+          (long)(weight_abs / 10),
+          (long)(weight_abs % 10),
+          (raw_x10 < 0) ? "-" : "",
+          (long)(raw_abs / 10),
+          (long)(raw_abs % 10),
           (unsigned long)HX711_2_DEFAULT_SAMPLES);
 
       StageProtocol_SendText(output);
@@ -1822,14 +1855,28 @@ static void StageProtocol_HandleLine(char *line)
 
     if (strcmp(action, "STATUS") == 0)
     {
+      int32_t tare_x10 =
+          (int32_t)lroundf(HX711_2_TareRaw * 10.0f);
+      int32_t tare_abs =
+          (tare_x10 < 0) ? -tare_x10 : tare_x10;
+
+      int32_t count_x10000 =
+          (int32_t)lroundf(HX711_2_CountPerG * 10000.0f);
+      int32_t count_abs =
+          (count_x10000 < 0) ? -count_x10000 : count_x10000;
+
       (void)snprintf(
           output,
           sizeof(output),
-          "FINAL_LOAD STATUS TARED %u CALIBRATED %u TARE_RAW %.1f COUNT_PER_G %.4f\r\n",
+          "FINAL_LOAD STATUS TARED %u CALIBRATED %u TARE_RAW %s%ld.%01ld COUNT_PER_G %s%ld.%04ld\r\n",
           HX711_2_TareValid ? 1U : 0U,
           HX711_2_CalValid ? 1U : 0U,
-          (double)HX711_2_TareRaw,
-          (double)HX711_2_CountPerG);
+          (tare_x10 < 0) ? "-" : "",
+          (long)(tare_abs / 10),
+          (long)(tare_abs % 10),
+          (count_x10000 < 0) ? "-" : "",
+          (long)(count_abs / 10000),
+          (long)(count_abs % 10000));
 
       StageProtocol_SendText(output);
       return;
