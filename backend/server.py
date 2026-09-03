@@ -702,6 +702,26 @@ PART_INSPECTION_MODE = os.getenv(
     str(WORK_ORDER_INSPECTION_CONFIG.get("detector", "opencv_baseline")),
 ).strip().lower()
 
+TRAY_VISION_ENABLED = (
+    os.getenv("TRAY_VISION_ENABLED", "0")
+    .strip()
+    .lower()
+    in {"1", "true", "yes", "on"}
+)
+
+FINAL_VISION_ENABLED = (
+    os.getenv("FINAL_VISION_ENABLED", "0")
+    .strip()
+    .lower()
+    in {"1", "true", "yes", "on"}
+)
+
+print(
+    "[INSPECTION CONFIG]",
+    f"tray_vision={'ON' if TRAY_VISION_ENABLED else 'OFF'}",
+    f"final_vision={'ON' if FINAL_VISION_ENABLED else 'OFF'}",
+)
+
 
 def read_work_order_inspection_frame(copy: bool = True):
     """Shared C920 frame; no inspection consumer owns a VideoCapture."""
@@ -2241,9 +2261,110 @@ def final_verification_check(
         - expected_weight_g
     )
 
-    passed = (
+    loadcell_passed = (
         difference_g
         <= request.tolerance_g
+    )
+
+    vision_result = {
+        "enabled": False,
+        "status": "SKIPPED",
+        "passed": None,
+        "message": "최종 Vision 검수가 비활성화되어 있습니다.",
+    }
+
+    # Vision OFF이면 최종 판정은 Load Cell만 사용한다.
+    vision_passed = True
+
+    if FINAL_VISION_ENABLED:
+        if PART_INSPECTION_MODE != "yolo":
+            vision_result = {
+                "enabled": True,
+                "status": "ERROR",
+                "passed": False,
+                "message": (
+                    "최종 Vision 검수 ON 상태에서는 "
+                    "PART_INSPECTION_MODE=yolo가 필요합니다."
+                ),
+            }
+            vision_passed = False
+
+        else:
+            latest = yolo_vision.latest_result()
+
+            if not latest.get("success", False):
+                vision_result = {
+                    "enabled": True,
+                    "status": "ERROR",
+                    "passed": False,
+                    "message": latest.get(
+                        "message",
+                        "최종 Vision 결과를 사용할 수 없습니다.",
+                    ),
+                }
+                vision_passed = False
+
+            else:
+                detected_counts = {
+                    str(key): int(value)
+                    for key, value in dict(
+                        latest.get("counts", {})
+                    ).items()
+                }
+
+                expected_counts = {}
+
+                for item in request.items:
+                    part = find_part_by_identifier(
+                        item.part_no,
+                        catalog=parts_catalog,
+                    )
+
+                    class_key = part["class_key"]
+
+                    expected_counts[class_key] = (
+                        expected_counts.get(class_key, 0)
+                        + item.quantity
+                    )
+
+                mismatches = []
+
+                for key in sorted(
+                    set(expected_counts)
+                    | set(detected_counts)
+                ):
+                    expected = int(
+                        expected_counts.get(key, 0)
+                    )
+                    detected = int(
+                        detected_counts.get(key, 0)
+                    )
+
+                    if expected != detected:
+                        mismatches.append({
+                            "class_key": key,
+                            "expected": expected,
+                            "detected": detected,
+                        })
+
+                vision_passed = not mismatches
+
+                vision_result = {
+                    "enabled": True,
+                    "status": (
+                        "PASS"
+                        if vision_passed
+                        else "FAIL"
+                    ),
+                    "passed": vision_passed,
+                    "expected_counts": expected_counts,
+                    "detected_counts": detected_counts,
+                    "mismatches": mismatches,
+                }
+
+    passed = bool(
+        loadcell_passed
+        and vision_passed
     )
 
     return {
@@ -2263,11 +2384,16 @@ def final_verification_check(
         ),
         "tolerance_g": request.tolerance_g,
         "breakdown": breakdown,
-        "loadcell": measurement,
+        "loadcell": {
+            **measurement,
+            "enabled": True,
+            "passed": loadcell_passed,
+        },
+        "vision": vision_result,
         "message": (
-            "최종 중량 검수 PASS"
+            "최종 검수 PASS"
             if passed
-            else "최종 중량 검수 FAIL"
+            else "최종 검수 FAIL"
         ),
     }
 
@@ -2280,6 +2406,15 @@ def loadcell_status():
 @app.post("/loadcell/tare")
 def loadcell_tare():
     return loadcell.tare()
+
+
+@app.get("/inspection/config")
+def inspection_config():
+    return {
+        "success": True,
+        "tray_vision_enabled": TRAY_VISION_ENABLED,
+        "final_vision_enabled": FINAL_VISION_ENABLED,
+    }
 
 
 @app.get("/inspection/status")
@@ -2559,6 +2694,7 @@ def inspection_run(request: InspectionRunRequest):
         part_no=request.part_no,
         class_key=request.class_key,
         expected_quantity=request.expected_quantity,
+        vision_enabled=TRAY_VISION_ENABLED,
     )
 
 

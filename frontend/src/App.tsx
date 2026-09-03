@@ -106,6 +106,55 @@ function formatDate(d: Date) {
   return `${d.getFullYear()}-${padZ(d.getMonth()+1)}-${padZ(d.getDate())}`
 }
 
+type InspectionVisionFlags = {
+  trayVisionEnabled: boolean
+  finalVisionEnabled: boolean
+}
+
+function useInspectionVisionFlags(): InspectionVisionFlags {
+  const [flags, setFlags] = useState<InspectionVisionFlags>({
+    trayVisionEnabled: false,
+    finalVisionEnabled: false,
+  })
+
+  useEffect(() => {
+    let cancelled = false
+
+    const loadFlags = async () => {
+      try {
+        const response = await fetch(
+          'http://127.0.0.1:8000/inspection/config'
+        )
+
+        if (!response.ok) {
+          return
+        }
+
+        const result = await response.json()
+
+        if (!cancelled) {
+          setFlags({
+            trayVisionEnabled:
+              result?.tray_vision_enabled === true,
+            finalVisionEnabled:
+              result?.final_vision_enabled === true,
+          })
+        }
+      } catch {
+        // Backend 상태를 읽지 못하면 안전하게 Vision OFF로 유지한다.
+      }
+    }
+
+    void loadFlags()
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  return flags
+}
+
 // ============================================================
 // STATUS BAR
 // ============================================================
@@ -2131,22 +2180,6 @@ function TrayMovingScreen({
 // SCREEN: PICKING
 // ============================================================
 
-// Generates stable random bounding box positions for detected parts
-function makeBoxes(count: number, seed: number) {
-  const boxes: { x: number; y: number; w: number; h: number }[] = []
-  for (let i = 0; i < count; i++) {
-    const pseudo = Math.sin(seed * 9301 + i * 49297 + 233720) * 0.5 + 0.5
-    const pseudo2 = Math.sin(seed * 7919 + i * 31337 + 104729) * 0.5 + 0.5
-    boxes.push({
-      x: 8 + (pseudo * 72),
-      y: 8 + (pseudo2 * 68),
-      w: 10 + (Math.sin(i * 17) * 0.5 + 0.5) * 8,
-      h: 10 + (Math.cos(i * 13) * 0.5 + 0.5) * 8,
-    })
-  }
-  return boxes
-}
-
 function NextTraySupplyPanel({
   nextItem
 }: {
@@ -2350,94 +2383,172 @@ function PickingScreen({
   item, itemIndex, totalItems, nextItem, isPaused, showStop,
   onAutoVerify, onManualVerify, onPause, onStop
 }: {
-  item: WorkItem; itemIndex: number; totalItems: number
+  item: WorkItem
+  itemIndex: number
+  totalItems: number
   nextItem: WorkItem | null
-  isPaused: boolean; showStop: boolean
-  onAutoVerify: () => void; onManualVerify: () => void
-  onPause: () => void; onStop: () => void
+  isPaused: boolean
+  showStop: boolean
+  onAutoVerify: () => void
+  onManualVerify: () => void
+  onPause: () => void
+  onStop: () => void
 }) {
-  // Hardware-free development simulator. The real system will replace this
-  // visual count with load-cell feedback after the sensor is installed.
-  const [count, setCount] = useState(0)
-  const [stable, setStable] = useState(false)
-  const [stableCountdown, setStableCountdown] = useState(3)
-  const pausedRef = useRef(isPaused)
-  const stopRef = useRef(showStop)
-  const countRef = useRef(0)
-
-  useEffect(() => { pausedRef.current = isPaused }, [isPaused])
-  useEffect(() => { stopRef.current = showStop }, [showStop])
-
-  // Mock picking progress until the real load-cell feedback is connected.
-  useEffect(() => {
-    if (count >= item.qty) return
-    const t = setTimeout(() => {
-      if (pausedRef.current || stopRef.current) return
-      setCount(c => {
-        const next = c + 1
-        countRef.current = next
-        return next
-      })
-    }, 1600 + Math.random() * 800)
-    return () => clearTimeout(t)
-  }, [count, item.qty])
-
-  useEffect(() => {
-    if (count >= item.qty) setStable(true)
-  }, [count, item.qty])
-
-  useEffect(() => {
-    if (!stable || isPaused || showStop) return
-    if (stableCountdown <= 0) { onAutoVerify(); return }
-    const t = setTimeout(() => setStableCountdown(c => c - 1), 1000)
-    return () => clearTimeout(t)
-  }, [stable, stableCountdown, isPaused, showStop, onAutoVerify])
-
-  const pct = Math.min(Math.round((count / item.qty) * 100), 100)
-  const reached = count >= item.qty
-  const boxes = makeBoxes(count, itemIndex * 100 + count)
+  const canComplete =
+    !isPaused && !showStop
 
   return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+    <div style={{
+      flex: 1,
+      display: 'flex',
+      flexDirection: 'column',
+      overflow: 'hidden'
+    }}>
       {/* Title */}
       <div style={{
-        background: 'var(--hmi-navy)', color: 'white', padding: '8px 16px',
-        display: 'flex', alignItems: 'center', gap: 12, borderBottom: '2px solid var(--hmi-blue-light)', flexShrink: 0
+        background: 'var(--hmi-navy)',
+        color: 'white',
+        padding: '8px 16px',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 12,
+        borderBottom: '2px solid var(--hmi-blue-light)',
+        flexShrink: 0
       }}>
-        <span style={{ fontWeight: 900, fontSize: 16, letterSpacing: '0.1em' }}>작업자 피킹</span>
+        <span style={{
+          fontWeight: 900,
+          fontSize: 16,
+          letterSpacing: '0.1em'
+        }}>
+          작업자 피킹
+        </span>
+
         <div style={{ flex: 1 }} />
-        <span style={{ fontSize: 12, color: '#93c5fd', fontFamily: 'JetBrains Mono, monospace' }}>품목 {itemIndex + 1} / {totalItems}</span>
+
+        <span style={{
+          fontSize: 12,
+          color: '#93c5fd',
+          fontFamily: 'JetBrains Mono, monospace'
+        }}>
+          품목 {itemIndex + 1} / {totalItems}
+        </span>
       </div>
 
-      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-
-        {/* LEFT: instruction panel */}
-        <div style={{ flex: '0 0 260px', borderRight: '2px solid var(--hmi-border)', background: 'white', display: 'flex', flexDirection: 'column' }}>
-          <div style={{ background: 'var(--hmi-navy)', color: 'white', padding: '10px 14px' }}>
-            <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 800, fontSize: 16, letterSpacing: '0.1em' }}>{item.tray}</div>
-            <div style={{ fontSize: 10, color: '#93c5fd', marginTop: 2 }}>작업 위치 도착</div>
-          </div>
-          <div style={{ padding: '16px 14px', flex: 1, display: 'flex', flexDirection: 'column', gap: 14 }}>
-            {/* Part info */}
-            <div>
-              <div style={{ fontSize: 22, fontWeight: 800, color: '#111827', lineHeight: 1.2 }}>{item.name}</div>
-              <div style={{ fontSize: 14, fontFamily: 'JetBrains Mono, monospace', color: '#374151', marginTop: 2 }}>{item.spec}</div>
+      <div style={{
+        flex: 1,
+        display: 'flex',
+        overflow: 'hidden'
+      }}>
+        {/* LEFT */}
+        <div style={{
+          flex: '0 0 260px',
+          borderRight: '2px solid var(--hmi-border)',
+          background: 'white',
+          display: 'flex',
+          flexDirection: 'column'
+        }}>
+          <div style={{
+            background: 'var(--hmi-navy)',
+            color: 'white',
+            padding: '10px 14px'
+          }}>
+            <div style={{
+              fontFamily: 'JetBrains Mono, monospace',
+              fontWeight: 800,
+              fontSize: 16,
+              letterSpacing: '0.1em'
+            }}>
+              {item.tray}
             </div>
 
-            {/* Big target qty */}
-            <div style={{ textAlign: 'center', padding: '12px 0', borderTop: '1px solid var(--hmi-border-light)', borderBottom: '1px solid var(--hmi-border-light)' }}>
-              <div style={{ fontSize: 11, color: 'var(--hmi-text-muted)', letterSpacing: '0.06em', marginBottom: 4 }}>피킹 목표 수량</div>
-              <div style={{ fontSize: 80, fontWeight: 900, color: 'var(--hmi-navy)', fontFamily: 'JetBrains Mono, monospace', lineHeight: 1 }}>
+            <div style={{
+              fontSize: 10,
+              color: '#93c5fd',
+              marginTop: 2
+            }}>
+              작업 위치 도착
+            </div>
+          </div>
+
+          <div style={{
+            padding: '16px 14px',
+            flex: 1,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 14
+          }}>
+            <div>
+              <div style={{
+                fontSize: 22,
+                fontWeight: 800,
+                color: '#111827',
+                lineHeight: 1.2
+              }}>
+                {item.name}
+              </div>
+
+              <div style={{
+                fontSize: 14,
+                fontFamily: 'JetBrains Mono, monospace',
+                color: '#374151',
+                marginTop: 2
+              }}>
+                {item.spec}
+              </div>
+            </div>
+
+            {/* 목표 수량만 표시 */}
+            <div style={{
+              textAlign: 'center',
+              padding: '12px 0',
+              borderTop: '1px solid var(--hmi-border-light)',
+              borderBottom: '1px solid var(--hmi-border-light)'
+            }}>
+              <div style={{
+                fontSize: 11,
+                color: 'var(--hmi-text-muted)',
+                letterSpacing: '0.06em',
+                marginBottom: 4
+              }}>
+                피킹 목표 수량
+              </div>
+
+              <div style={{
+                fontSize: 80,
+                fontWeight: 900,
+                color: 'var(--hmi-navy)',
+                fontFamily: 'JetBrains Mono, monospace',
+                lineHeight: 1
+              }}>
                 {item.qty}
               </div>
-              <div style={{ fontSize: 12, color: 'var(--hmi-text-muted)' }}>EA</div>
+
+              <div style={{
+                fontSize: 12,
+                color: 'var(--hmi-text-muted)'
+              }}>
+                EA
+              </div>
             </div>
 
-            {/* Instruction */}
-            <div style={{ background: '#eff6ff', border: '1px solid #93c5fd', borderLeft: '4px solid var(--hmi-blue)', padding: '10px 12px', fontSize: 13, color: '#1e3a8a', lineHeight: 1.5 }}>
+            <div style={{
+              background: '#eff6ff',
+              border: '1px solid #93c5fd',
+              borderLeft: '4px solid var(--hmi-blue)',
+              padding: '10px 12px',
+              fontSize: 13,
+              color: '#1e3a8a',
+              lineHeight: 1.5
+            }}>
               {item.tray}에서<br />
               <strong>{item.name} {item.spec}</strong>을<br />
-              <span style={{ fontWeight: 800, fontSize: 15 }}>{item.qty}개</span> 피킹하세요.
+              <span style={{
+                fontWeight: 800,
+                fontSize: 15
+              }}>
+                {item.qty}개
+              </span>
+              {' '}피킹하세요.
             </div>
 
             <NextTraySupplyPanel
@@ -2446,151 +2557,210 @@ function PickingScreen({
 
             <div style={{ flex: 1 }} />
 
-            {/* Exception buttons */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              <div style={{ fontSize: 10, color: 'var(--hmi-text-muted)', letterSpacing: '0.05em', marginBottom: 2 }}>예외 조작</div>
-              <button className="btn-warning" style={{ width: '100%', padding: '9px', fontSize: 13 }} onClick={onPause}>⏸ 일시 정지</button>
-              <button className="btn-secondary" style={{ width: '100%', padding: '9px', fontSize: 12 }} onClick={onManualVerify}>수동 확인</button>
-              <button className="btn-danger" style={{ width: '100%', padding: '9px', fontSize: 13 }} onClick={onStop}>■ 작업 중지</button>
-            </div>
-          </div>
-        </div>
+            {/* 정상 작업 */}
+            <button
+              className="btn-primary"
+              style={{
+                width: '100%',
+                padding: '11px',
+                fontSize: 14,
+                fontWeight: 800
+              }}
+              disabled={!canComplete}
+              onClick={onAutoVerify}
+            >
+              ✓ 피킹 완료 → 검수
+            </button>
 
-        {/* CENTER: YOLO camera — main focus */}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', background: '#0a0f1a' }}>
-          <div style={{ background: '#0f1929', borderBottom: '1px solid #1e3a5f', padding: '6px 14px', display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span className="status-dot blink" style={{ background: '#ef4444' }} />
-            <span style={{ color: '#94a3b8', fontSize: 11, fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>PICKING MONITOR  MOCK</span>
-            <div style={{ flex: 1 }} />
-            <span style={{ color: '#4ade80', fontSize: 10, fontFamily: 'JetBrains Mono, monospace' }}>LOAD CELL + PART VISION: HARDWARE PENDING</span>
-          </div>
-
-          {/* Camera area */}
-          <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
-            {/* Tray background simulation */}
-            <div style={{ position: 'absolute', inset: 0, background: '#111827' }}>
-              {/* Tray grid lines */}
-              <svg style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', opacity: 0.12 }}>
-                <defs>
-                  <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
-                    <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#60a5fa" strokeWidth="0.5"/>
-                  </pattern>
-                </defs>
-                <rect width="100%" height="100%" fill="url(#grid)" />
-              </svg>
-
-              {/* Tray outline */}
-              <div style={{
-                position: 'absolute', inset: '12%',
-                border: '2px solid rgba(96,165,250,0.3)',
-                background: 'rgba(15,23,42,0.6)'
-              }} />
-
-              {/* YOLO bounding boxes for detected parts */}
-              {boxes.map((b, i) => (
-                <div key={i} style={{
-                  position: 'absolute',
-                  left: `${12 + b.x * 0.76}%`,
-                  top: `${12 + b.y * 0.76}%`,
-                  width: `${b.w}%`,
-                  height: `${b.h}%`,
-                  border: '2px solid #4ade80',
-                  boxShadow: '0 0 6px rgba(74,222,128,0.5)',
-                }}>
-                  <div style={{
-                    position: 'absolute', top: -16, left: 0,
-                    background: '#16a34a', color: 'white',
-                    fontSize: 9, padding: '1px 4px',
-                    fontFamily: 'JetBrains Mono, monospace', whiteSpace: 'nowrap'
-                  }}>
-                    {item.partNo} {(0.92 + i * 0.007).toFixed(2)}
-                  </div>
-                </div>
-              ))}
-
-              {/* Scan line */}
-              <div style={{
-                position: 'absolute', left: 0, right: 0, height: 2,
-                background: 'rgba(74,222,128,0.4)',
-                animation: 'scan-line 2.5s linear infinite'
-              }} />
-
-              {/* Corner markers */}
-              {[
-                { top: '12%', left: '12%' },
-                { top: '12%', right: '12%' },
-                { bottom: '12%', left: '12%' },
-                { bottom: '12%', right: '12%' },
-              ].map((pos, i) => (
-                <div key={i} style={{
-                  position: 'absolute', ...pos,
-                  width: 16, height: 16,
-                  borderTop: (pos as any).top ? '2px solid #60a5fa' : 'none',
-                  borderBottom: (pos as any).bottom !== undefined ? '2px solid #60a5fa' : 'none',
-                  borderLeft: (pos as any).left ? '2px solid #60a5fa' : 'none',
-                  borderRight: (pos as any).right !== undefined ? '2px solid #60a5fa' : 'none',
-                }} />
-              ))}
-            </div>
-
-            {/* Count overlay — bottom bar */}
+            {/* 예외 조작 */}
             <div style={{
-              position: 'absolute', bottom: 0, left: 0, right: 0,
-              background: 'rgba(7,17,31,0.92)', borderTop: '1px solid #1e3a5f',
-              padding: '10px 18px', display: 'flex', alignItems: 'center', gap: 20
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 6
             }}>
-              {/* Live count */}
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-                <span style={{ color: '#64748b', fontSize: 11, fontFamily: 'JetBrains Mono, monospace' }}>MOCK COUNT</span>
-                <span style={{
-                  fontFamily: 'JetBrains Mono, monospace', fontWeight: 900,
-                  fontSize: 42, lineHeight: 1,
-                  color: reached ? '#4ade80' : '#60a5fa',
-                  transition: 'color 0.3s'
-                }}>{count}</span>
-                <span style={{ color: '#475569', fontSize: 22, fontFamily: 'JetBrains Mono, monospace' }}>/</span>
-                <span style={{ color: '#94a3b8', fontSize: 26, fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>{item.qty}</span>
+              <div style={{
+                fontSize: 10,
+                color: 'var(--hmi-text-muted)',
+                letterSpacing: '0.05em',
+                marginBottom: 2
+              }}>
+                예외 조작
               </div>
 
-              {/* Progress bar */}
-              <div style={{ flex: 1 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                  <span style={{ fontSize: 10, color: '#64748b', fontFamily: 'JetBrains Mono, monospace' }}>진행률</span>
-                  <span style={{ fontSize: 10, color: '#94a3b8', fontFamily: 'JetBrains Mono, monospace' }}>{pct}%</span>
-                </div>
-                <div style={{ height: 8, background: '#1e293b' }}>
-                  <div style={{ height: '100%', width: `${pct}%`, background: reached ? '#16a34a' : '#2563eb', transition: 'width 0.4s, background 0.3s' }} />
-                </div>
-              </div>
+              <button
+                className="btn-warning"
+                style={{
+                  width: '100%',
+                  padding: '9px',
+                  fontSize: 13
+                }}
+                onClick={onPause}
+              >
+                ⏸ 일시 정지
+              </button>
 
-              {/* Stability / status */}
-              <div style={{ minWidth: 180 }}>
-                {!reached ? (
-                  <div style={{ color: '#60a5fa', fontSize: 12, fontFamily: 'JetBrains Mono, monospace', display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span className="blink">●</span> 피킹 대기 중...
-                  </div>
-                ) : stable && stableCountdown > 0 ? (
-                  <div>
-                    <div style={{ color: '#fcd34d', fontSize: 11, fontFamily: 'JetBrains Mono, monospace', marginBottom: 4 }}>
-                      ✓ 목표 수량 도달 — 안정성 확인 중
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <div style={{ flex: 1, height: 4, background: '#1e293b' }}>
-                        <div style={{ height: '100%', width: `${((3 - stableCountdown) / 3) * 100}%`, background: '#f59e0b', transition: 'width 1s linear' }} />
-                      </div>
-                      <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 900, fontSize: 20, color: '#fcd34d' }}>{stableCountdown}</span>
-                    </div>
-                  </div>
-                ) : stable && stableCountdown <= 0 ? (
-                  <div style={{ color: '#4ade80', fontSize: 12, fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>
-                    ✓ 검증 화면으로 이동 중...
-                  </div>
-                ) : null}
-              </div>
+              <button
+                className="btn-secondary"
+                style={{
+                  width: '100%',
+                  padding: '9px',
+                  fontSize: 12
+                }}
+                onClick={onManualVerify}
+              >
+                수동 확인
+              </button>
+
+              <button
+                className="btn-danger"
+                style={{
+                  width: '100%',
+                  padding: '9px',
+                  fontSize: 13
+                }}
+                onClick={onStop}
+              >
+                ■ 작업 중지
+              </button>
             </div>
           </div>
         </div>
 
+        {/* CENTER */}
+        <div style={{
+          flex: 1,
+          display: 'flex',
+          flexDirection: 'column',
+          background: '#0a0f1a'
+        }}>
+          <div style={{
+            background: '#0f1929',
+            borderBottom: '1px solid #1e3a5f',
+            padding: '6px 14px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10
+          }}>
+            <span
+              className="status-dot blink"
+              style={{ background: '#60a5fa' }}
+            />
+
+            <span style={{
+              color: '#94a3b8',
+              fontSize: 11,
+              fontFamily: 'JetBrains Mono, monospace',
+              fontWeight: 700
+            }}>
+              PICKING IN PROGRESS
+            </span>
+
+            <div style={{ flex: 1 }} />
+
+            <span style={{
+              color: '#60a5fa',
+              fontSize: 10,
+              fontFamily: 'JetBrains Mono, monospace'
+            }}>
+              {item.tray} READY
+            </span>
+          </div>
+
+          <div style={{
+            flex: 1,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center'
+          }}>
+            <div style={{
+              textAlign: 'center'
+            }}>
+              <div style={{
+                color: '#94a3b8',
+                fontSize: 13,
+                fontWeight: 700,
+                letterSpacing: '0.1em',
+                marginBottom: 18
+              }}>
+                작업자 피킹 진행 중
+              </div>
+
+              <div style={{
+                color: '#64748b',
+                fontSize: 12,
+                marginBottom: 6
+              }}>
+                TARGET QUANTITY
+              </div>
+
+              <div style={{
+                display: 'flex',
+                justifyContent: 'center',
+                alignItems: 'baseline',
+                gap: 10
+              }}>
+                <span style={{
+                  color: '#60a5fa',
+                  fontSize: 76,
+                  fontWeight: 900,
+                  fontFamily: 'JetBrains Mono, monospace'
+                }}>
+                  {item.qty}
+                </span>
+
+                <span style={{
+                  color: '#64748b',
+                  fontSize: 18
+                }}>
+                  EA
+                </span>
+              </div>
+
+              <div style={{
+                color: '#94a3b8',
+                fontSize: 12,
+                marginTop: 24
+              }}>
+                피킹 완료 후 검수 단계에서 수량을 확인합니다.
+              </div>
+            </div>
+          </div>
+
+          {/* Bottom status */}
+          <div style={{
+            background: 'rgba(7,17,31,0.92)',
+            borderTop: '1px solid #1e3a5f',
+            padding: '10px 18px',
+            display: 'flex',
+            alignItems: 'center'
+          }}>
+            <div style={{
+              fontFamily: 'JetBrains Mono, monospace',
+              color: '#94a3b8',
+              fontSize: 11
+            }}>
+              TARGET&nbsp;
+              <strong style={{
+                color: '#60a5fa',
+                fontSize: 18
+              }}>
+                {item.qty}
+              </strong>
+              &nbsp;EA
+            </div>
+
+            <div style={{ flex: 1 }} />
+
+            <div style={{
+              color: '#60a5fa',
+              fontSize: 12,
+              fontFamily: 'JetBrains Mono, monospace'
+            }}>
+              <span className="blink">●</span>
+              {' '}작업자 피킹 중...
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   )

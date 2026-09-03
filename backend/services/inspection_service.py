@@ -73,6 +73,7 @@ class InspectionService:
         part_no: str | None = None,
         class_key: str | None = None,
         expected_quantity: int,
+        vision_enabled: bool = True,
     ) -> dict[str, Any]:
         identifier = str(class_key or part_no or "").strip()
         if expected_quantity <= 0:
@@ -101,14 +102,74 @@ class InspectionService:
             part_config=part_config,
             expected_quantity=expected_quantity,
         )
+
+        loadcell_passed = bool(
+            loadcell_result.get("success", False)
+            and loadcell_result.get("count_confident", False)
+            and int(loadcell_result.get("estimated_quantity") or 0)
+            == expected_quantity
+        )
+
+        if not vision_enabled:
+            return {
+                "success": bool(loadcell_result.get("success", False)),
+                "passed": loadcell_passed,
+                "matched": loadcell_passed,
+                "mock": bool(loadcell_result.get("mock", False)),
+                "status": "match" if loadcell_passed else "mismatch",
+                "status_label": (
+                    "정상"
+                    if loadcell_passed
+                    else "Load Cell 수량 불일치"
+                ),
+                "decision": "PASS" if loadcell_passed else "NG",
+                "class_key": canonical_key,
+                "display_name": part_config["display_name"],
+                "part_no": canonical_part_no,
+                "expected_count": expected_quantity,
+                "detected_count": (
+                    int(loadcell_result.get("estimated_quantity") or 0)
+                ),
+                "expected_quantity": expected_quantity,
+                "detected_quantity": (
+                    int(loadcell_result.get("estimated_quantity") or 0)
+                ),
+                "difference": (
+                    int(loadcell_result.get("estimated_quantity") or 0)
+                    - expected_quantity
+                ),
+                "reasons": (
+                    []
+                    if loadcell_passed
+                    else ["LOADCELL_COUNT_MISMATCH"]
+                ),
+                "vision": {
+                    "enabled": False,
+                    "status": "SKIPPED",
+                    "passed": None,
+                    "message": "중간 Vision 검수가 비활성화되어 있습니다.",
+                },
+                "loadcell": loadcell_result,
+                "message": (
+                    "Load Cell 검수 PASS"
+                    if loadcell_passed
+                    else "Load Cell 검수 FAIL"
+                ),
+            }
+
         vision_result = self.part_vision.inspect(
             class_key=canonical_key,
             part_config=part_config,
             expected_count=expected_quantity,
         )
         detected_count = int(vision_result.get("detected_count") or 0)
-        detected_key = vision_result.get("class_key") or vision_result.get("detected_class")
-        vision_status = str(vision_result.get("status") or "error")
+        detected_key = (
+            vision_result.get("class_key")
+            or vision_result.get("detected_class")
+        )
+        vision_status = str(
+            vision_result.get("status") or "error"
+        )
         counting_pending = bool(
             not vision_result.get("mock")
             and expected_quantity > 1
@@ -134,7 +195,14 @@ class InspectionService:
             )
 
         class_matched = bool(detected_key == canonical_key)
-        passed = bool(status == "match" and class_matched)
+        vision_passed = bool(
+            status == "match"
+            and class_matched
+        )
+        passed = bool(
+            loadcell_passed
+            and vision_passed
+        )
         reasons: list[str] = []
         if status == "unknown":
             reasons.append(
