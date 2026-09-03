@@ -126,6 +126,62 @@ class STM32GripperStepperAdapter:
             "stop_result": stop_result,
         }
 
+    def home(self) -> dict[str, Any]:
+        """
+        Gripper rack 원점을 잡는다.
+
+        STM32 HOME sequence:
+        RETRACT limit -> release -> slow re-touch -> final 3 mm release -> 0 mm.
+        """
+        if self.stage._stop_event.is_set():
+            return {
+                "success": False,
+                "cancelled": True,
+                "action": "HOME",
+                "message": "STOP 상태이므로 Gripper HOME을 시작하지 않습니다.",
+            }
+
+        connection_error = self._ensure_connected()
+        if connection_error:
+            return connection_error
+
+        result = self.stage._send_expect(
+            "GRIPPER HOME",
+            success="OK GRIPPER HOME",
+            timeout=2.0,
+        )
+
+        if not result.get("success"):
+            return {
+                "success": False,
+                "action": "HOME",
+                "message": result.get("message", "GRIPPER HOME 실패"),
+                "received": result.get("received", []),
+            }
+
+        wait_result = self._wait_until_idle(timeout=30.0)
+        if not wait_result.get("success"):
+            return {
+                "success": False,
+                "action": "HOME",
+                "message": wait_result.get("message", "GRIPPER HOME 완료 대기 실패"),
+                "received": wait_result.get("received", []),
+            }
+
+        status_message = str(wait_result.get("message", ""))
+        if " HOMED 1 " not in f" {status_message} ":
+            return {
+                "success": False,
+                "action": "HOME",
+                "message": f"GRIPPER HOME 후 HOMED 확인 실패: {status_message}",
+            }
+
+        return {
+            "success": True,
+            "action": "HOME",
+            "message": status_message,
+        }
+
     def _move(self, action: str) -> dict[str, Any]:
         action = action.strip().upper()
 
@@ -148,12 +204,32 @@ class STM32GripperStepperAdapter:
         )
 
         if not result.get("success"):
-            return {
-                "success": False,
-                "action": action,
-                "message": result.get("message", f"Gripper {action} 실패"),
-                "received": result.get("received", []),
-            }
+            message = str(result.get("message", ""))
+
+            # 전원 재인가/위치 유실 후 첫 동작은 자동 HOME 후 한 번만 재시도한다.
+            if "ERR GRIPPER NOT_HOMED" in message:
+                home_result = self.home()
+                if not home_result.get("success"):
+                    return {
+                        "success": False,
+                        "action": action,
+                        "message": home_result.get("message", "Gripper 자동 HOME 실패"),
+                        "received": home_result.get("received", []),
+                    }
+
+                result = self.stage._send_expect(
+                    f"GRIPPER {action}",
+                    success=f"OK GRIPPER {action}",
+                    timeout=2.0,
+                )
+
+            if not result.get("success"):
+                return {
+                    "success": False,
+                    "action": action,
+                    "message": result.get("message", f"Gripper {action} 실패"),
+                    "received": result.get("received", []),
+                }
 
         wait_result = self._wait_until_idle(timeout=15.0)
         if not wait_result.get("success"):
