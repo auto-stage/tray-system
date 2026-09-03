@@ -20,6 +20,7 @@ from adapters.mock_loadcell_adapter import MockLoadCellAdapter
 from adapters.mock_part_inspection_adapter import MockPartInspectionAdapter
 from adapters.work_order_camera_adapter import WorkOrderCameraAdapter
 from services.inspection_service import InspectionService
+from services.aruco_alignment_mode import load_alignment_mode
 from workflow.workflow_controller import WorkflowController
 from workflow.material_flow_controller import MaterialFlowController
 from workflow.material_flow_executor import MaterialFlowExecutor
@@ -46,6 +47,31 @@ import uuid
 # ============================================================
 
 BASE_DIR = Path(__file__).resolve().parent
+
+ARUCO_SYSTEM_CONFIG_PATH = (
+    BASE_DIR.parent
+    / "modules"
+    / "aruco_tray_vision"
+    / "config"
+    / "system.yaml"
+)
+
+ARUCO_ALIGNMENT_MODE = load_alignment_mode(
+    ARUCO_SYSTEM_CONFIG_PATH,
+    override=os.getenv("ARUCO_ALIGNMENT_MODE"),
+)
+
+print("[ARUCO ALIGNMENT]", f"mode={ARUCO_ALIGNMENT_MODE}")
+
+
+def build_material_flow_alignment_callback():
+    if ARUCO_ALIGNMENT_MODE == "disabled":
+        return None
+
+    # observe_only / closed_loop 모두 단일 callback으로 라우팅하고,
+    # 실제 모드 분기는 material_flow_alignment_callback() 내부에서 수행한다.
+    return lambda tray_id: material_flow_alignment_callback(tray_id)
+
 
 UPLOAD_DIR = BASE_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
@@ -655,9 +681,7 @@ if (
         gripper_servo_bypass=GRIPPER_SERVO_BYPASS,
         # 실제 Stage에서는 ArUco 정렬을 BYPASS하지 않는다.
         # 함수 정의는 파일 뒤쪽에 있지만 callback은 실행 시점에 조회된다.
-        alignment_callback=(
-            lambda tray_id: material_flow_alignment_callback(tray_id)
-        ),
+        alignment_callback=build_material_flow_alignment_callback(),
     )
 
     print(
@@ -689,11 +713,7 @@ elif (
         gripper_servo_bypass=GRIPPER_SERVO_BYPASS,
         # Mock 장치 시험은 기존 BYPASS를 유지하되, 실제 ArUco 카메라를
         # 선택한 경우에는 동일한 정렬 callback으로 통합 시퀀스를 검증한다.
-        alignment_callback=(
-            (lambda tray_id: material_flow_alignment_callback(tray_id))
-            if VISION_MODE == "aruco"
-            else None
-        ),
+        alignment_callback=build_material_flow_alignment_callback(),
     )
 
     print(
@@ -2765,20 +2785,198 @@ class VisionAlignRequest(BaseModel):
     expected_tray_id: int
 
 
+@app.get("/vision/alignment-mode")
+def vision_alignment_mode():
+    config = (
+        aruco_vision.get_correction_loop_config()
+        if hasattr(aruco_vision, "get_correction_loop_config")
+        else {}
+    )
+
+    return {
+        "success": True,
+        "mode": ARUCO_ALIGNMENT_MODE,
+        "vision_mode": VISION_MODE,
+        "correction_loop_enabled": config.get("enabled"),
+    }
+
+
+def _observe_only_alignment(
+    expected_tray_id: int,
+):
+    """
+    Marker/Tray 관측만 수행한다.
+
+    Stage correction용 calibration/readiness는 성공 조건이 아니다.
+    Marker/Tray 식별이 성공하면 observe_only는 성공으로 처리하고
+    Stage는 절대 이동시키지 않는다.
+    """
+    if VISION_MODE != "aruco":
+        return {
+            "success": False,
+            "mode": "observe_only",
+            "observed": False,
+            "stage_moved": False,
+            "error": "ALIGNMENT_UNAVAILABLE",
+            "message": "observe_only 모드는 VISION_MODE=aruco가 필요합니다.",
+        }
+
+    if not aruco_camera_enabled:
+        return {
+            "success": False,
+            "mode": "observe_only",
+            "observed": False,
+            "stage_moved": False,
+            "error": "ARUCO_CAMERA_DISABLED",
+            "message": "ArUco 카메라가 비활성화되어 있습니다.",
+        }
+
+    detection = aruco_vision.detect_tray_aruco(
+        expected_tray_id=int(expected_tray_id)
+    )
+
+    if (
+        not detection.get("success")
+        or not detection.get("detected")
+    ):
+        return {
+            "success": False,
+            "mode": "observe_only",
+            "observed": bool(detection.get("detected")),
+            "stage_moved": False,
+            "aligned": False,
+            "error": detection.get(
+                "error_code",
+                detection.get("error", "VISION_FAILED"),
+            ),
+            "message": detection.get(
+                "message",
+                "ArUco Marker를 검출하지 못했습니다.",
+            ),
+            "final_detection": detection,
+        }
+
+    detected_tray_id = detection.get("tray_id")
+
+    if detected_tray_id is None:
+        return {
+            "success": False,
+            "mode": "observe_only",
+            "observed": True,
+            "stage_moved": False,
+            "aligned": False,
+            "error": "TRAY_ID_UNAVAILABLE",
+            "message": "ArUco는 검출됐지만 Tray ID를 확인할 수 없습니다.",
+            "final_detection": detection,
+        }
+
+    if int(detected_tray_id) != int(expected_tray_id):
+        return {
+            "success": False,
+            "mode": "observe_only",
+            "observed": True,
+            "stage_moved": False,
+            "aligned": False,
+            "error": "TRAY_ID_MISMATCH",
+            "message": (
+                f"요청 Tray ID={expected_tray_id}, "
+                f"검출 Tray ID={detected_tray_id} 불일치"
+            ),
+            "final_detection": detection,
+        }
+
+    alignment_ok = detection.get("alignment_ok")
+
+    return {
+        "success": True,
+        "mode": "observe_only",
+        "bypassed": False,
+        "observed": True,
+        "stage_moved": False,
+        "aligned": alignment_ok,
+        "verified": alignment_ok is True,
+        "correction_available": bool(
+            detection.get("ready_for_stage_correction")
+        ),
+        "aruco_id": detection.get(
+            "aruco_id",
+            detection.get("marker_id"),
+        ),
+        "tray_id": detected_tray_id,
+        "final_detection": detection,
+        "message": (
+            "ArUco Marker/Tray 관측 성공. "
+            "observe_only 모드이므로 Stage 보정 이동은 실행하지 않았습니다."
+        ),
+    }
+
+
 @app.post("/vision/align")
 def vision_align(request: VisionAlignRequest):
     """
-    Planned closed-loop X/Z alignment for the moving ArUco camera.
+    ArUco alignment operation modes.
 
-    Safety gates:
-    - correction_loop.enabled must be true
-    - real tray geometry must be calibrated
-    - Camera->Carriage alignment must be calibrated
-    - X/Z tolerance and maximum single correction must be configured
+    disabled:
+        ArUco 정렬 단계를 BYPASS한다.
+
+    observe_only:
+        Marker/Tray ID 및 관측 결과만 확인한다.
+        Stage correction readiness는 성공 조건이 아니며 Stage는 이동하지 않는다.
+
+    closed_loop:
+        기존 X/Z 폐루프 Stage 보정을 수행한다.
     """
+    mode = ARUCO_ALIGNMENT_MODE
+
+    if mode == "disabled":
+        return {
+            "success": True,
+            "mode": "disabled",
+            "bypassed": True,
+            "observed": False,
+            "stage_moved": False,
+            "aligned": None,
+            "verified": False,
+            "message": "ArUco 정렬 단계를 BYPASS했습니다.",
+        }
+
+    if mode == "observe_only":
+        return _observe_only_alignment(
+            request.expected_tray_id
+        )
+
+    if mode != "closed_loop":
+        return {
+            "success": False,
+            "mode": mode,
+            "aligned": False,
+            "error": "INVALID_ALIGNMENT_MODE",
+            "message": f"지원하지 않는 ArUco alignment mode: {mode}",
+        }
+
+    if VISION_MODE != "aruco":
+        return {
+            "success": False,
+            "mode": mode,
+            "aligned": False,
+            "error": "ALIGNMENT_UNAVAILABLE",
+            "message": "closed_loop 모드는 VISION_MODE=aruco가 필요합니다.",
+        }
+
+    if not aruco_camera_enabled:
+        return {
+            "success": False,
+            "mode": mode,
+            "aligned": False,
+            "error": "ARUCO_CAMERA_DISABLED",
+            "message": "ArUco 카메라가 비활성화되어 있습니다.",
+        }
+
     if not hasattr(aruco_vision, "get_correction_loop_config"):
         return {
             "success": False,
+            "mode": mode,
+            "aligned": False,
             "error": "ALIGNMENT_UNAVAILABLE",
             "message": "실제 ArUco Vision 모드에서만 사용할 수 있습니다.",
         }
@@ -2788,10 +2986,12 @@ def vision_align(request: VisionAlignRequest):
     if not config.get("enabled", False):
         return {
             "success": False,
+            "mode": mode,
+            "aligned": False,
             "error": "CORRECTION_LOOP_DISABLED",
             "message": (
-                "자동 X/Z 보정은 아직 비활성화 상태입니다. "
-                "실장/캘리브레이션 완료 후 system.yaml에서 활성화하세요."
+                "closed_loop X/Z 보정 안전 스위치가 비활성화 상태입니다. "
+                "실장/캘리브레이션 완료 후 system.yaml에서 enabled=true로 설정하세요."
             ),
             "config": config,
         }
@@ -2800,8 +3000,10 @@ def vision_align(request: VisionAlignRequest):
     max_single = config.get("max_single_correction_mm", {})
 
     required_limits = [
-        tolerance.get("x"), tolerance.get("z"),
-        max_single.get("x"), max_single.get("z"),
+        tolerance.get("x"),
+        tolerance.get("z"),
+        max_single.get("x"),
+        max_single.get("z"),
     ]
 
     if any(
@@ -2810,37 +3012,58 @@ def vision_align(request: VisionAlignRequest):
     ):
         return {
             "success": False,
+            "mode": mode,
+            "aligned": False,
             "error": "ALIGNMENT_LIMITS_NOT_CONFIGURED",
             "message": (
-                "X/Z 허용오차와 1회 최대 보정량을 먼저 실측값으로 설정해야 합니다."
+                "X/Z 허용오차와 1회 최대 보정량을 "
+                "먼저 실측값으로 설정해야 합니다."
             ),
             "config": config,
         }
 
-    max_iterations = int(config.get("max_iterations", 2))
+    max_iterations = int(
+        config.get("max_iterations", 2)
+    )
     steps = []
 
     for iteration in range(max_iterations + 1):
         detection = aruco_vision.detect_tray_aruco(
             expected_tray_id=request.expected_tray_id
         )
+
         steps.append({
             "type": "VISION",
             "iteration": iteration,
             "result": detection,
         })
 
-        if not detection.get("success") or not detection.get("detected"):
+        if (
+            not detection.get("success")
+            or not detection.get("detected")
+        ):
             return {
                 "success": False,
-                "error": detection.get("error_code", "VISION_FAILED"),
-                "message": detection.get("message", "ArUco 검출에 실패했습니다."),
+                "mode": mode,
+                "aligned": False,
+                "error": detection.get(
+                    "error_code",
+                    "VISION_FAILED",
+                ),
+                "message": detection.get(
+                    "message",
+                    "ArUco 검출에 실패했습니다.",
+                ),
                 "steps": steps,
             }
 
-        if not detection.get("ready_for_stage_correction"):
+        if not detection.get(
+            "ready_for_stage_correction"
+        ):
             return {
                 "success": False,
+                "mode": mode,
+                "aligned": False,
                 "error": "VISION_CORRECTION_BLOCKED",
                 "message": detection.get(
                     "message",
@@ -2849,7 +3072,10 @@ def vision_align(request: VisionAlignRequest):
                 "steps": steps,
             }
 
-        delta = detection.get("stage_correction_delta_mm") or {}
+        delta = (
+            detection.get("stage_correction_delta_mm")
+            or {}
+        )
         dx = float(delta.get("x", 0.0))
         dz = float(delta.get("z", 0.0))
 
@@ -2859,7 +3085,9 @@ def vision_align(request: VisionAlignRequest):
         ):
             return {
                 "success": True,
+                "mode": mode,
                 "aligned": True,
+                "verified": True,
                 "iterations": iteration,
                 "final_detection": detection,
                 "steps": steps,
@@ -2868,9 +3096,12 @@ def vision_align(request: VisionAlignRequest):
         if iteration >= max_iterations:
             return {
                 "success": False,
+                "mode": mode,
                 "aligned": False,
                 "error": "ALIGNMENT_MAX_ITERATIONS",
-                "message": "허용 횟수 내에 X/Z 정렬 오차가 수렴하지 않았습니다.",
+                "message": (
+                    "허용 횟수 내에 X/Z 정렬 오차가 수렴하지 않았습니다."
+                ),
                 "final_detection": detection,
                 "steps": steps,
             }
@@ -2881,14 +3112,21 @@ def vision_align(request: VisionAlignRequest):
         ):
             return {
                 "success": False,
+                "mode": mode,
                 "aligned": False,
                 "error": "CORRECTION_TOO_LARGE",
-                "message": "Vision 보정량이 설정된 1회 최대 이동량을 초과했습니다.",
-                "correction_mm": {"x": dx, "z": dz},
+                "message": (
+                    "Vision 보정량이 설정된 1회 최대 이동량을 초과했습니다."
+                ),
+                "correction_mm": {
+                    "x": dx,
+                    "z": dz,
+                },
                 "steps": steps,
             }
 
         move = stage.move_relative(dx, dz)
+
         steps.append({
             "type": "STAGE_CORRECTION",
             "iteration": iteration + 1,
@@ -2898,57 +3136,104 @@ def vision_align(request: VisionAlignRequest):
         if not move.get("success"):
             return {
                 "success": False,
+                "mode": mode,
                 "aligned": False,
                 "error": "STAGE_CORRECTION_FAILED",
-                "message": move.get("message", "Stage 보정 이동에 실패했습니다."),
+                "message": move.get(
+                    "message",
+                    "Stage 보정 이동에 실패했습니다.",
+                ),
                 "steps": steps,
             }
 
-        if not config.get("reobserve_after_move", True):
+        if not config.get(
+            "reobserve_after_move",
+            True,
+        ):
             return {
                 "success": True,
+                "mode": mode,
                 "aligned": None,
                 "verified": False,
-                "message": "보정 이동은 완료했지만 재관측 검증은 비활성화되어 있습니다.",
+                "message": (
+                    "보정 이동은 완료했지만 "
+                    "재관측 검증은 비활성화되어 있습니다."
+                ),
                 "steps": steps,
             }
 
     return {
         "success": False,
+        "mode": mode,
+        "aligned": False,
         "error": "ALIGNMENT_INTERNAL_ERROR",
         "steps": steps,
     }
 
 
-def material_flow_alignment_callback(tray_id: int):
+def material_flow_alignment_callback(
+    tray_id: int,
+):
     """
-    MaterialFlowExecutor에서 사용하는 ArUco 정렬 callback.
+    MaterialFlowExecutor ArUco alignment gate.
 
-    수동 /vision/align API와 동일한 폐루프 보정 로직을 재사용하되,
-    자동 파지 시퀀스에서는 재관측으로 aligned=True가 확인된 경우만
-    다음 단계로 진행하도록 강제한다.
+    disabled:
+        즉시 성공 처리하여 기본 Material Flow를 계속한다.
+
+    observe_only:
+        Marker/Tray 식별 성공만 요구한다.
+        aligned=True 또는 Stage correction readiness는 요구하지 않는다.
+
+    closed_loop:
+        실제 Stage 보정 후 aligned=True까지 요구한다.
     """
-    if VISION_MODE != "aruco":
+    mode = ARUCO_ALIGNMENT_MODE
+
+    if mode == "disabled":
         return {
-            "success": False,
-            "aligned": False,
-            "error": "ALIGNMENT_UNAVAILABLE",
+            "success": True,
+            "mode": "disabled",
+            "bypassed": True,
+            "observed": False,
+            "stage_moved": False,
+            "aligned": None,
+            "alignment_gate_passed": True,
             "message": (
-                "실제 Material Flow에서 ArUco 정렬을 BYPASS할 수 없습니다. "
-                "VISION_MODE=aruco로 실행하세요."
+                "ArUco 정렬을 BYPASS하고 Material Flow를 계속합니다."
             ),
         }
 
-    if not aruco_camera_enabled:
+    if mode == "observe_only":
+        result = _observe_only_alignment(
+            int(tray_id)
+        )
+
+        if not result.get("success", False):
+            return result
+
+        return {
+            **result,
+            "alignment_gate_passed": True,
+            "message": (
+                "ArUco Marker/Tray 식별 성공. "
+                "observe_only 모드이므로 Stage 보정 없이 "
+                "Material Flow를 계속합니다."
+            ),
+        }
+
+    if mode != "closed_loop":
         return {
             "success": False,
+            "mode": mode,
             "aligned": False,
-            "error": "ARUCO_CAMERA_DISABLED",
-            "message": "ArUco 카메라가 비활성화되어 있어 자동 정렬을 실행할 수 없습니다.",
+            "error": "INVALID_ALIGNMENT_MODE",
+            "message": f"지원하지 않는 ArUco alignment mode: {mode}",
         }
 
     result = vision_align(
-        VisionAlignRequest(expected_tray_id=int(tray_id))
+        VisionAlignRequest(
+            expected_tray_id=int(tray_id)
+        )
     )
 
     if not result.get("success", False):
@@ -2961,12 +3246,15 @@ def material_flow_alignment_callback(tray_id: int):
             "aligned": False,
             "error": "ALIGNMENT_NOT_VERIFIED",
             "message": (
-                "자동 Material Flow에서는 Stage 보정 후 ArUco 재관측으로 "
-                "정렬 완료가 확인되어야 합니다."
+                "closed_loop Material Flow에서는 Stage 보정 후 "
+                "ArUco 재관측으로 정렬 완료가 확인되어야 합니다."
             ),
         }
 
-    return result
+    return {
+        **result,
+        "alignment_gate_passed": True,
+    }
 
 
 # ============================================================

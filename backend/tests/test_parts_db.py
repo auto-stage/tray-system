@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+import tempfile
 import unittest
+
+import yaml
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -37,6 +40,34 @@ class PartsDatabaseTest(unittest.TestCase):
         self.assertIsNone(database["B001"]["spec"])
         self.assertIsNone(database["W002"]["spec"])
 
+
+    def test_duplicate_tray_id_is_rejected(self) -> None:
+        source = yaml.safe_load(
+            (BACKEND_DIR / "config" / "parts.yaml").read_text(encoding="utf-8")
+        )
+        source["parts"]["flange_nut"]["tray_id"] = 1
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "parts.yaml"
+            path.write_text(
+                yaml.safe_dump(source, allow_unicode=True),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "중복 tray_id"):
+                load_parts_catalog(path)
+
+    def test_out_of_range_tray_id_is_rejected(self) -> None:
+        source = yaml.safe_load(
+            (BACKEND_DIR / "config" / "parts.yaml").read_text(encoding="utf-8")
+        )
+        source["parts"]["flange_nut"]["tray_id"] = 7
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "parts.yaml"
+            path.write_text(
+                yaml.safe_dump(source, allow_unicode=True),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "1~6 범위"):
+                load_parts_catalog(path)
 
 if __name__ == "__main__":
     unittest.main()

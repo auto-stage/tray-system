@@ -3,11 +3,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from parts_db import format_part_spec, load_parts_catalog
+
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 INVENTORY_PATH = BASE_DIR / "data" / "inventory.json"
 TRANSACTION_PATH = BASE_DIR / "data" / "inventory_transactions.json"
+PARTS_CONFIG_PATH = BASE_DIR / "config" / "parts.yaml"
 
 MAX_STOCK = 30
 LOW_STOCK_THRESHOLD = 6
@@ -62,10 +65,16 @@ def get_all_inventory():
     - 6개 이하 = LOW STOCK
     """
     inventory = load_inventory()
+    parts = load_parts_catalog(PARTS_CONFIG_PATH)
+    parts_by_no = {
+        str(config.get("part_no") or class_key): config
+        for class_key, config in parts.items()
+    }
 
     result = {}
 
     for part_no, item in inventory.items():
+        part_config = parts_by_no.get(str(part_no))
         stock = int(
             item.get("stock", 0)
         )
@@ -79,8 +88,21 @@ def get_all_inventory():
             )
         )
 
+        metadata = {}
+        if part_config is not None:
+            spec_display = format_part_spec(part_config)
+            metadata = {
+                "part_no": str(part_no),
+                "class_key": part_config["class_key"],
+                # Tray 배치는 parts.yaml을 단일 기준으로 사용한다.
+                "tray": int(part_config["tray_id"]),
+                "name": part_config["display_name"],
+                "spec": spec_display,
+            }
+
         result[part_no] = {
             **item,
+            **metadata,
             "stock": stock,
             "max_stock": MAX_STOCK,
             "percent": min(

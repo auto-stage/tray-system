@@ -3,6 +3,9 @@
 # Physical dimensions and weight intentionally remain null until measured.
 # OpenCV reference features are collected from the real fixed camera and are
 # stored separately; no guessed classifier thresholds belong in this file.
+#
+# tray_id is the current operator-configurable part-to-Tray assignment.
+# Change tray_id when the physical contents are rearranged; IDs must be unique 1..6.
 
 parts:
   flange_nut:
