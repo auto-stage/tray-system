@@ -2912,130 +2912,529 @@ function FinalVerificationScreen({
   items: WorkItem[]; isPaused: boolean; showStop: boolean
   onPass: () => void; onPause: () => void; onStop: () => void
 }) {
-  const [weightResult, setWeightResult] = useState<'checking' | 'pass' | 'fail'>('checking')
-  const [remeasuring, setRemeasuring] = useState(false)
-  const [autoCountdown, setAutoCountdown] = useState<number | null>(null)
+  const [weightResult, setWeightResult] =
+    useState<'checking' | 'pass' | 'fail' | 'error'>('checking')
 
-  // Per-item weight constants
-  const UNIT_WEIGHTS: Record<string, number> = { 'B001': 0.05, 'B002': 0.04, 'S001': 0.02 }
-  const collectionTrayEmpty = 0.50
-  const itemWeights = items.map(i => ({ ...i, unitW: UNIT_WEIGHTS[i.partNo] ?? 0.03, totalW: (UNIT_WEIGHTS[i.partNo] ?? 0.03) * i.qty }))
-  const expectedNet = parseFloat(itemWeights.reduce((s, i) => s + i.totalW, 0).toFixed(3))
-  const measuredTotal = parseFloat((collectionTrayEmpty + expectedNet).toFixed(3))
-  const actualNet = parseFloat((measuredTotal - collectionTrayEmpty).toFixed(3))
-  const tolerance = parseFloat((expectedNet * 0.02).toFixed(3))
-  const lo = parseFloat((expectedNet - tolerance).toFixed(3))
-  const hi = parseFloat((expectedNet + tolerance).toFixed(3))
+  const [verification, setVerification] =
+    useState<any>(null)
+
+  const [autoCountdown, setAutoCountdown] =
+    useState<number | null>(null)
+
+  // 실제 하드웨어 반복 측정 후 config로 이동 예정.
+  const toleranceG = 5.0
+
+  const runFinalVerification = async () => {
+    setWeightResult('checking')
+    setAutoCountdown(null)
+
+    try {
+      const response = await fetch(
+        'http://127.0.0.1:8000/final-verification/check',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            items: items.map(item => ({
+              part_no: item.partNo,
+              quantity: item.qty,
+            })),
+            tolerance_g: toleranceG,
+          }),
+        }
+      )
+
+      if (!response.ok) {
+        throw new Error(
+          `Final Verification 서버 오류: ${response.status}`
+        )
+      }
+
+      const result = await response.json()
+
+      setVerification(result)
+
+      if (!result.success) {
+        setWeightResult('error')
+        return
+      }
+
+      setWeightResult(
+        result.passed === true
+          ? 'pass'
+          : 'fail'
+      )
+
+    } catch (error) {
+      console.error(
+        '[FINAL VERIFICATION] 검수 요청 실패:',
+        error
+      )
+
+      setVerification({
+        success: false,
+        passed: false,
+        message:
+          error instanceof Error
+            ? error.message
+            : '최종 검수 요청 실패',
+      })
+
+      setWeightResult('error')
+    }
+  }
 
   useEffect(() => {
-    const t = setTimeout(() => setWeightResult('pass'), 1500)
-    return () => clearTimeout(t)
+    if (isPaused || showStop) {
+      return
+    }
+
+    void runFinalVerification()
   }, [])
 
   useEffect(() => {
-    if (remeasuring) {
-      setWeightResult('checking')
-      const t = setTimeout(() => { setWeightResult('pass'); setRemeasuring(false) }, 2200)
-      return () => clearTimeout(t)
+    if (
+      weightResult !== 'pass'
+      || isPaused
+      || showStop
+    ) {
+      return
     }
-  }, [remeasuring])
 
-  useEffect(() => {
-    if (weightResult !== 'pass' || isPaused || showStop) return
     setAutoCountdown(3)
   }, [weightResult, isPaused, showStop])
 
   useEffect(() => {
-    if (autoCountdown === null || isPaused || showStop) return
-    if (autoCountdown <= 0) { onPass(); return }
-    const t = setTimeout(() => setAutoCountdown(c => (c ?? 1) - 1), 1000)
-    return () => clearTimeout(t)
-  }, [autoCountdown, isPaused, showStop, onPass])
+    if (
+      autoCountdown === null
+      || isPaused
+      || showStop
+    ) {
+      return
+    }
+
+    if (autoCountdown <= 0) {
+      onPass()
+      return
+    }
+
+    const timer = setTimeout(
+      () =>
+        setAutoCountdown(
+          current => (current ?? 1) - 1
+        ),
+      1000
+    )
+
+    return () => clearTimeout(timer)
+  }, [
+    autoCountdown,
+    isPaused,
+    showStop,
+    onPass,
+  ])
+
+  const breakdown =
+    Array.isArray(verification?.breakdown)
+      ? verification.breakdown
+      : []
+
+  const expectedWeightG =
+    Number(verification?.expected_weight_g)
+
+  const measuredWeightG =
+    Number(verification?.measured_weight_g)
+
+  const differenceG =
+    Number(verification?.difference_g)
+
+  const returnedToleranceG =
+    Number(
+      verification?.tolerance_g
+      ?? toleranceG
+    )
+
+  const valueOrDash = (
+    value: number,
+    digits = 1,
+  ) =>
+    Number.isFinite(value)
+      ? `${value.toFixed(digits)} g`
+      : '-'
+
+  const isPass =
+    weightResult === 'pass'
+
+  const isFail =
+    weightResult === 'fail'
+
+  const isError =
+    weightResult === 'error'
 
   return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+    <div style={{
+      flex: 1,
+      display: 'flex',
+      flexDirection: 'column',
+      overflow: 'hidden'
+    }}>
       <div style={{
-        background: 'var(--hmi-navy)', color: 'white', padding: '8px 16px',
-        display: 'flex', alignItems: 'center', gap: 12, borderBottom: '2px solid var(--hmi-blue-light)', flexShrink: 0
+        background: 'var(--hmi-navy)',
+        color: 'white',
+        padding: '8px 16px',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 12,
+        borderBottom:
+          '2px solid var(--hmi-blue-light)',
+        flexShrink: 0
       }}>
-        <span style={{ fontWeight: 900, fontSize: 16, letterSpacing: '0.1em' }}>FINAL WEIGHT VERIFICATION <span style={{ fontSize: 10, color: '#fcd34d' }}>MOCK</span></span>
+        <span style={{
+          fontWeight: 900,
+          fontSize: 16,
+          letterSpacing: '0.1em'
+        }}>
+          FINAL WEIGHT VERIFICATION
+        </span>
+
+        {verification?.loadcell?.mock === true && (
+          <span style={{
+            fontSize: 10,
+            color: '#fcd34d'
+          }}>
+            MOCK
+          </span>
+        )}
+
         <div style={{ flex: 1 }} />
-        <span style={{ fontSize: 12, color: '#93c5fd', fontFamily: 'JetBrains Mono, monospace' }}>전체 {items.length}개 품목 합산 검증</span>
+
+        <span style={{
+          fontSize: 12,
+          color: '#93c5fd',
+          fontFamily:
+            'JetBrains Mono, monospace'
+        }}>
+          전체 {items.length}개 품목 합산 검증
+        </span>
       </div>
 
-      <div style={{ flex: 1, overflow: 'auto', background: 'var(--hmi-work-bg)', padding: 16, display: 'flex', gap: 14 }}>
+      <div style={{
+        flex: 1,
+        overflow: 'auto',
+        background: 'var(--hmi-work-bg)',
+        padding: 16,
+        display: 'flex',
+        gap: 14
+      }}>
 
         {/* Left: per-item breakdown */}
-        <div style={{ flex: '0 0 300px', display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <div style={{ background: 'white', border: '1px solid var(--hmi-border)' }}>
-            <div className="section-header" style={{ fontSize: 11 }}>피킹 완료 품목</div>
-            {itemWeights.map((item, i) => (
-              <div key={i} style={{ padding: '10px 14px', borderBottom: i < items.length - 1 ? '1px solid var(--hmi-border-light)' : 'none' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
-                  <span style={{ fontWeight: 700, fontSize: 13 }}>{item.name}</span>
-                  <span className="badge-green" style={{ fontSize: 9, padding: '1px 6px' }}>✓ PICKED</span>
+        <div style={{
+          flex: '0 0 320px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 10
+        }}>
+          <div style={{
+            background: 'white',
+            border: '1px solid var(--hmi-border)'
+          }}>
+            <div
+              className="section-header"
+              style={{ fontSize: 11 }}
+            >
+              피킹 완료 품목
+            </div>
+
+            {items.map((item, i) => {
+              const detail =
+                breakdown.find(
+                  (entry: any) =>
+                    entry.part_no === item.partNo
+                )
+
+              return (
+                <div
+                  key={`${item.partNo}-${i}`}
+                  style={{
+                    padding: '10px 14px',
+                    borderBottom:
+                      i < items.length - 1
+                        ? '1px solid var(--hmi-border-light)'
+                        : 'none'
+                  }}
+                >
+                  <div style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    marginBottom: 3
+                  }}>
+                    <span style={{
+                      fontWeight: 700,
+                      fontSize: 13
+                    }}>
+                      {item.name}
+                    </span>
+
+                    <span
+                      className="badge-green"
+                      style={{
+                        fontSize: 9,
+                        padding: '1px 6px'
+                      }}
+                    >
+                      ✓ PICKED
+                    </span>
+                  </div>
+
+                  <div style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    fontSize: 11
+                  }}>
+                    <span style={{
+                      fontFamily:
+                        'JetBrains Mono, monospace',
+                      color: '#374151'
+                    }}>
+                      {item.partNo} · {item.qty} EA
+                    </span>
+
+                    <span style={{
+                      fontFamily:
+                        'JetBrains Mono, monospace',
+                      color: 'var(--hmi-text-muted)'
+                    }}>
+                      {detail
+                        ? `${Number(detail.unit_weight_g).toFixed(2)} g/EA → ${Number(detail.expected_weight_g).toFixed(2)} g`
+                        : '단위중량 확인 대기'}
+                    </span>
+                  </div>
                 </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11 }}>
-                  <span style={{ fontFamily: 'JetBrains Mono, monospace', color: '#374151' }}>{item.spec}</span>
-                  <span style={{ fontFamily: 'JetBrains Mono, monospace', color: 'var(--hmi-text-muted)' }}>{item.qty} EA × {item.unitW.toFixed(2)}kg = <strong style={{ color: '#111827' }}>{item.totalW.toFixed(2)}kg</strong></span>
-                </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
-          <div style={{ background: '#eff6ff', border: '2px solid var(--hmi-blue)', padding: '10px 14px' }}>
-            <div style={{ fontSize: 11, color: 'var(--hmi-blue)', marginBottom: 4 }}>예상 총 부품 순중량</div>
-            <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 900, fontSize: 24, color: 'var(--hmi-blue)' }}>{expectedNet.toFixed(3)} kg</div>
+
+          <div style={{
+            background: '#eff6ff',
+            border: '2px solid var(--hmi-blue)',
+            padding: '10px 14px'
+          }}>
+            <div style={{
+              fontSize: 11,
+              color: 'var(--hmi-blue)',
+              marginBottom: 4
+            }}>
+              예상 총 부품 순중량
+            </div>
+
+            <div style={{
+              fontFamily:
+                'JetBrains Mono, monospace',
+              fontWeight: 900,
+              fontSize: 24,
+              color: 'var(--hmi-blue)'
+            }}>
+              {valueOrDash(expectedWeightG)}
+            </div>
           </div>
         </div>
 
-        {/* Right: load cell verification */}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <div style={{ background: 'white', border: '1px solid var(--hmi-border)' }}>
-            <div className="section-header" style={{ fontSize: 11 }}>LOAD CELL — 최종 무게 검증</div>
-            <div style={{ padding: '14px 18px' }}>
-              {remeasuring ? (
-                <div style={{ textAlign: 'center', padding: '28px', color: 'var(--hmi-blue)' }}>
-                  <div className="spin" style={{ display: 'inline-block', width: 28, height: 28, border: '3px solid var(--hmi-blue)', borderTopColor: 'transparent', marginBottom: 10 }} />
-                  <div style={{ fontWeight: 700 }}>무게 재측정 중...</div>
+        {/* Right */}
+        <div style={{
+          flex: 1,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 12
+        }}>
+          <div style={{
+            background: 'white',
+            border: '1px solid var(--hmi-border)'
+          }}>
+            <div
+              className="section-header"
+              style={{ fontSize: 11 }}
+            >
+              LOAD CELL #2 — 최종 박스 무게 검증
+            </div>
+
+            <div style={{
+              padding: '14px 18px'
+            }}>
+              {weightResult === 'checking' ? (
+                <div style={{
+                  textAlign: 'center',
+                  padding: '28px',
+                  color: 'var(--hmi-blue)'
+                }}>
+                  <div
+                    className="spin"
+                    style={{
+                      display: 'inline-block',
+                      width: 28,
+                      height: 28,
+                      border:
+                        '3px solid var(--hmi-blue)',
+                      borderTopColor: 'transparent',
+                      marginBottom: 10
+                    }}
+                  />
+
+                  <div style={{
+                    fontWeight: 700
+                  }}>
+                    최종 박스 무게 측정 중...
+                  </div>
                 </div>
               ) : (
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns:
+                    '1fr 1fr',
+                  gap: 16
+                }}>
                   <div>
-                    <div style={{ fontSize: 11, color: 'var(--hmi-text-muted)', marginBottom: 8 }}>측정값</div>
-                    {[
-                      { label: '수집 Tray 전체 무게', val: `${measuredTotal.toFixed(3)} kg` },
-                      { label: '빈 수집 Tray 기준 무게', val: `${collectionTrayEmpty.toFixed(2)} kg` },
-                    ].map(r => (
-                      <div key={r.label} style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 10px', background: '#f8f9fa', border: '1px solid var(--hmi-border-light)', marginBottom: 6 }}>
-                        <span style={{ fontSize: 12, color: '#374151' }}>{r.label}</span>
-                        <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>{r.val}</span>
-                      </div>
-                    ))}
-                    <div style={{ display: 'flex', justifyContent: 'space-between', padding: '9px 10px', background: '#eff6ff', border: '2px solid var(--hmi-blue)' }}>
-                      <span style={{ fontWeight: 700, color: 'var(--hmi-blue)' }}>실제 부품 순중량</span>
-                      <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 900, fontSize: 17, color: 'var(--hmi-blue)' }}>{actualNet.toFixed(3)} kg</span>
+                    <div style={{
+                      fontSize: 11,
+                      color:
+                        'var(--hmi-text-muted)',
+                      marginBottom: 8
+                    }}>
+                      측정값
                     </div>
-                  </div>
-                  <div>
-                    <div style={{ fontSize: 11, color: 'var(--hmi-text-muted)', marginBottom: 8 }}>기준값</div>
+
                     {[
-                      { label: '예상 부품 순중량', val: `${expectedNet.toFixed(3)} kg` },
-                      { label: '허용 범위', val: `${lo.toFixed(3)} ~ ${hi.toFixed(3)} kg` },
-                    ].map(r => (
-                      <div key={r.label} style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 10px', background: '#f8f9fa', border: '1px solid var(--hmi-border-light)', marginBottom: 6 }}>
-                        <span style={{ fontSize: 12, color: '#374151' }}>{r.label}</span>
-                        <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>{r.val}</span>
+                      {
+                        label: '실측 부품 순중량',
+                        val:
+                          valueOrDash(
+                            measuredWeightG
+                          )
+                      },
+                      {
+                        label: '예상 부품 순중량',
+                        val:
+                          valueOrDash(
+                            expectedWeightG
+                          )
+                      },
+                      {
+                        label: '중량 차이',
+                        val:
+                          valueOrDash(
+                            differenceG
+                          )
+                      },
+                    ].map(row => (
+                      <div
+                        key={row.label}
+                        style={{
+                          display: 'flex',
+                          justifyContent:
+                            'space-between',
+                          padding: '7px 10px',
+                          background: '#f8f9fa',
+                          border:
+                            '1px solid var(--hmi-border-light)',
+                          marginBottom: 6
+                        }}
+                      >
+                        <span style={{
+                          fontSize: 12,
+                          color: '#374151'
+                        }}>
+                          {row.label}
+                        </span>
+
+                        <span style={{
+                          fontFamily:
+                            'JetBrains Mono, monospace',
+                          fontWeight: 700
+                        }}>
+                          {row.val}
+                        </span>
                       </div>
                     ))}
-                    {weightResult !== 'checking' && (
-                      <div style={{ display: 'flex', justifyContent: 'space-between', padding: '9px 10px', background: weightResult === 'pass' ? 'var(--hmi-green-bg)' : 'var(--hmi-red-bg)', border: `2px solid ${weightResult === 'pass' ? 'var(--hmi-green)' : 'var(--hmi-red-accent)'}` }}>
-                        <span style={{ fontWeight: 700, color: weightResult === 'pass' ? 'var(--hmi-green)' : 'var(--hmi-red)' }}>무게 판정</span>
-                        <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 900, fontSize: 16, color: weightResult === 'pass' ? 'var(--hmi-green)' : 'var(--hmi-red)' }}>{weightResult === 'pass' ? 'PASS' : 'FAIL'}</span>
-                      </div>
-                    )}
-                    {weightResult === 'checking' && (
-                      <div style={{ padding: '9px 10px', background: '#f0f9ff', border: '1px solid var(--hmi-blue)', textAlign: 'center', color: 'var(--hmi-blue)', fontSize: 12 }}>
-                        <span className="blink">무게 측정 중...</span>
+                  </div>
+
+                  <div>
+                    <div style={{
+                      fontSize: 11,
+                      color:
+                        'var(--hmi-text-muted)',
+                      marginBottom: 8
+                    }}>
+                      판정 기준
+                    </div>
+
+                    <div style={{
+                      display: 'flex',
+                      justifyContent:
+                        'space-between',
+                      padding: '7px 10px',
+                      background: '#f8f9fa',
+                      border:
+                        '1px solid var(--hmi-border-light)',
+                      marginBottom: 6
+                    }}>
+                      <span style={{
+                        fontSize: 12,
+                        color: '#374151'
+                      }}>
+                        허용 오차
+                      </span>
+
+                      <span style={{
+                        fontFamily:
+                          'JetBrains Mono, monospace',
+                        fontWeight: 700
+                      }}>
+                        ±{returnedToleranceG.toFixed(1)} g
+                      </span>
+                    </div>
+
+                    {!isError && (
+                      <div style={{
+                        display: 'flex',
+                        justifyContent:
+                          'space-between',
+                        padding: '9px 10px',
+                        background:
+                          isPass
+                            ? 'var(--hmi-green-bg)'
+                            : 'var(--hmi-red-bg)',
+                        border:
+                          `2px solid ${
+                            isPass
+                              ? 'var(--hmi-green)'
+                              : 'var(--hmi-red-accent)'
+                          }`
+                      }}>
+                        <span style={{
+                          fontWeight: 700,
+                          color:
+                            isPass
+                              ? 'var(--hmi-green)'
+                              : 'var(--hmi-red)'
+                        }}>
+                          무게 판정
+                        </span>
+
+                        <span style={{
+                          fontFamily:
+                            'JetBrains Mono, monospace',
+                          fontWeight: 900,
+                          fontSize: 16,
+                          color:
+                            isPass
+                              ? 'var(--hmi-green)'
+                              : 'var(--hmi-red)'
+                        }}>
+                          {isPass
+                            ? 'PASS'
+                            : 'FAIL'}
+                        </span>
                       </div>
                     )}
                   </div>
@@ -3044,35 +3443,117 @@ function FinalVerificationScreen({
             </div>
           </div>
 
-          {/* Final result */}
-          {weightResult !== 'checking' && !remeasuring && (
+          {(isPass || isFail || isError) && (
             <div style={{
-              background: weightResult === 'pass' ? 'var(--hmi-green-bg)' : 'var(--hmi-red-bg)',
-              border: `2px solid ${weightResult === 'pass' ? 'var(--hmi-green)' : 'var(--hmi-red-accent)'}`,
+              background:
+                isPass
+                  ? 'var(--hmi-green-bg)'
+                  : 'var(--hmi-red-bg)',
+              border:
+                `2px solid ${
+                  isPass
+                    ? 'var(--hmi-green)'
+                    : 'var(--hmi-red-accent)'
+                }`,
               padding: '16px 20px'
             }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-                <span style={{ fontSize: 28, color: weightResult === 'pass' ? 'var(--hmi-green)' : 'var(--hmi-red)' }}>
-                  {weightResult === 'pass' ? '✓' : '✗'}
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 14
+              }}>
+                <span style={{
+                  fontSize: 28,
+                  color:
+                    isPass
+                      ? 'var(--hmi-green)'
+                      : 'var(--hmi-red)'
+                }}>
+                  {isPass ? '✓' : '✗'}
                 </span>
+
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 900, fontSize: 18, color: weightResult === 'pass' ? 'var(--hmi-green)' : 'var(--hmi-red)' }}>
-                    {weightResult === 'pass' ? 'FINAL WEIGHT VERIFIED — PASS' : 'WEIGHT VERIFICATION FAILED'}
+                  <div style={{
+                    fontWeight: 900,
+                    fontSize: 18,
+                    color:
+                      isPass
+                        ? 'var(--hmi-green)'
+                        : 'var(--hmi-red)'
+                  }}>
+                    {isPass
+                      ? 'FINAL WEIGHT VERIFIED — PASS'
+                      : isError
+                        ? 'FINAL VERIFICATION NOT READY'
+                        : 'WEIGHT VERIFICATION FAILED'}
                   </div>
-                  {weightResult === 'pass' && !isPaused && !showStop && autoCountdown !== null && (
-                    <div style={{ fontSize: 13, color: 'var(--hmi-green-dark)', marginTop: 4 }}>
-                      {autoCountdown > 0 ? `${autoCountdown}초 후 Tray 복귀 단계로 이동합니다...` : 'Tray 복귀 단계로 이동합니다...'}
-                    </div>
-                  )}
+
+                  <div style={{
+                    fontSize: 13,
+                    marginTop: 4
+                  }}>
+                    {verification?.message}
+                  </div>
+
+                  {isPass
+                    && !isPaused
+                    && !showStop
+                    && autoCountdown !== null
+                    && (
+                      <div style={{
+                        fontSize: 13,
+                        color:
+                          'var(--hmi-green-dark)',
+                        marginTop: 4
+                      }}>
+                        {autoCountdown > 0
+                          ? `${autoCountdown}초 후 Tray 복귀 단계로 이동합니다...`
+                          : 'Tray 복귀 단계로 이동합니다...'}
+                      </div>
+                    )}
                 </div>
               </div>
             </div>
           )}
 
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button className="btn-warning" style={{ flex: 1, padding: '10px' }} onClick={() => { setRemeasuring(true); setAutoCountdown(null) }}>↺ 재측정</button>
-            <button className="btn-secondary" style={{ flex: 1, padding: '10px' }} onClick={onPause}>⏸ 일시 정지</button>
-            <button className="btn-danger" style={{ flex: 1, padding: '10px' }} onClick={onStop}>■ 작업 중지</button>
+          <div style={{
+            display: 'flex',
+            gap: 8
+          }}>
+            <button
+              className="btn-warning"
+              style={{
+                flex: 1,
+                padding: '10px'
+              }}
+              onClick={() => {
+                void runFinalVerification()
+              }}
+            >
+              ↺ 재측정
+            </button>
+
+            <button
+              className="btn-secondary"
+              style={{
+                flex: 1,
+                padding: '10px'
+              }}
+              onClick={onPause}
+            >
+              ⏸ 일시 정지
+            </button>
+
+            <button
+              className="btn-danger"
+              style={{
+                flex: 1,
+                padding: '10px'
+              }}
+              onClick={onStop}
+            >
+              ■ 작업 중지
+            </button>
           </div>
         </div>
       </div>

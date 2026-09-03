@@ -431,6 +431,308 @@ class STM32StageAdapter(StageAdapter):
         }
 
     # ========================================================
+    # Final Box Load Cell / HX711 #2
+    # ========================================================
+
+    def read_final_loadcell_raw(self):
+        """
+        최종 검수 박스 HX711 #2의 RAW 값을 읽는다.
+
+        STM32 response:
+            FINAL_LOAD_RAW 123456
+        """
+
+        result = self._send_expect(
+            "FINAL_LOAD RAW",
+            success="FINAL_LOAD_RAW",
+            timeout=2.0,
+        )
+
+        if not result.get("success"):
+            return {
+                "success": False,
+                "message": result.get(
+                    "message",
+                    "FINAL_LOAD RAW 명령 실패",
+                ),
+                "received": result.get(
+                    "received",
+                    [],
+                ),
+            }
+
+        line = result.get("message", "")
+
+        match = re.fullmatch(
+            r"FINAL_LOAD_RAW\s+(-?\d+)",
+            line,
+        )
+
+        if not match:
+            return {
+                "success": False,
+                "message": (
+                    f"FINAL_LOAD RAW 응답 파싱 실패: {line}"
+                ),
+            }
+
+        return {
+            "success": True,
+            "connected": True,
+            "raw": int(match.group(1)),
+            "message": line,
+        }
+
+    def tare_final_loadcell(self):
+        """
+        빈 최종 박스 상태에서 HX711 #2 runtime tare 수행.
+
+        STM32 response:
+            OK FINAL_LOAD TARE RAW 123456.0 SAMPLES 10
+        """
+
+        result = self._send_expect(
+            "FINAL_LOAD TARE",
+            success="OK FINAL_LOAD TARE",
+            timeout=5.0,
+        )
+
+        if not result.get("success"):
+            return {
+                "success": False,
+                "message": result.get(
+                    "message",
+                    "FINAL_LOAD TARE 명령 실패",
+                ),
+                "received": result.get(
+                    "received",
+                    [],
+                ),
+            }
+
+        line = result.get("message", "")
+
+        match = re.fullmatch(
+            r"OK FINAL_LOAD TARE RAW "
+            r"(-?\d+(?:\.\d+)?) "
+            r"SAMPLES (\d+)",
+            line,
+        )
+
+        if not match:
+            return {
+                "success": False,
+                "message": (
+                    f"FINAL_LOAD TARE 응답 파싱 실패: {line}"
+                ),
+            }
+
+        return {
+            "success": True,
+            "connected": True,
+            "tare_raw": float(match.group(1)),
+            "samples": int(match.group(2)),
+            "message": line,
+        }
+
+    def calibrate_final_loadcell(
+        self,
+        known_weight_g: float,
+    ):
+        """
+        기준추 무게(g)를 이용해 HX711 #2 calibration 수행.
+        TARE가 먼저 완료되어 있어야 한다.
+        """
+
+        if known_weight_g <= 0:
+            return {
+                "success": False,
+                "message": (
+                    "기준 무게는 0g보다 커야 합니다."
+                ),
+            }
+
+        command = (
+            "FINAL_LOAD CAL "
+            f"{float(known_weight_g):.3f}"
+        )
+
+        result = self._send_expect(
+            command,
+            success="OK FINAL_LOAD CAL",
+            timeout=5.0,
+        )
+
+        if not result.get("success"):
+            return {
+                "success": False,
+                "message": result.get(
+                    "message",
+                    "FINAL_LOAD CAL 명령 실패",
+                ),
+                "received": result.get(
+                    "received",
+                    [],
+                ),
+            }
+
+        line = result.get("message", "")
+
+        match = re.fullmatch(
+            r"OK FINAL_LOAD CAL WEIGHT_G "
+            r"(-?\d+(?:\.\d+)?) "
+            r"COUNT_PER_G "
+            r"(-?\d+(?:\.\d+)?)",
+            line,
+        )
+
+        if not match:
+            return {
+                "success": False,
+                "message": (
+                    f"FINAL_LOAD CAL 응답 파싱 실패: {line}"
+                ),
+            }
+
+        return {
+            "success": True,
+            "connected": True,
+            "known_weight_g": float(
+                match.group(1)
+            ),
+            "count_per_g": float(
+                match.group(2)
+            ),
+            "message": line,
+        }
+
+    def read_final_loadcell_weight(self):
+        """
+        HX711 #2의 보정된 최종 박스 중량을 읽는다.
+
+        STM32 response:
+            FINAL_LOAD WEIGHT_G 100.2 RAW_AVG 123456.7 SAMPLES 10
+        """
+
+        result = self._send_expect(
+            "FINAL_LOAD WEIGHT",
+            success="FINAL_LOAD WEIGHT_G",
+            timeout=5.0,
+        )
+
+        if not result.get("success"):
+            return {
+                "success": False,
+                "message": result.get(
+                    "message",
+                    "FINAL_LOAD WEIGHT 명령 실패",
+                ),
+                "received": result.get(
+                    "received",
+                    [],
+                ),
+            }
+
+        line = result.get("message", "")
+
+        match = re.fullmatch(
+            r"FINAL_LOAD WEIGHT_G "
+            r"(-?\d+(?:\.\d+)?) "
+            r"RAW_AVG "
+            r"(-?\d+(?:\.\d+)?) "
+            r"SAMPLES (\d+)",
+            line,
+        )
+
+        if not match:
+            return {
+                "success": False,
+                "message": (
+                    f"FINAL_LOAD WEIGHT 응답 파싱 실패: {line}"
+                ),
+            }
+
+        return {
+            "success": True,
+            "connected": True,
+            "weight_g": float(
+                match.group(1)
+            ),
+            "raw_average": float(
+                match.group(2)
+            ),
+            "samples": int(
+                match.group(3)
+            ),
+            "message": line,
+        }
+
+    def get_final_loadcell_status(self):
+        """
+        HX711 #2 runtime TARE/CAL 상태 확인.
+
+        STM32 response:
+            FINAL_LOAD STATUS TARED 1 CALIBRATED 1
+            TARE_RAW 123456.0 COUNT_PER_G 668.1234
+        """
+
+        result = self._send_expect(
+            "FINAL_LOAD STATUS",
+            success="FINAL_LOAD STATUS",
+            timeout=2.0,
+        )
+
+        if not result.get("success"):
+            return {
+                "success": False,
+                "connected": False,
+                "message": result.get(
+                    "message",
+                    "FINAL_LOAD STATUS 명령 실패",
+                ),
+            }
+
+        line = result.get("message", "")
+
+        match = re.fullmatch(
+            r"FINAL_LOAD STATUS "
+            r"TARED ([01]) "
+            r"CALIBRATED ([01]) "
+            r"TARE_RAW "
+            r"(-?\d+(?:\.\d+)?) "
+            r"COUNT_PER_G "
+            r"(-?\d+(?:\.\d+)?)",
+            line,
+        )
+
+        if not match:
+            return {
+                "success": False,
+                "connected": True,
+                "message": (
+                    f"FINAL_LOAD STATUS 응답 파싱 실패: {line}"
+                ),
+            }
+
+        return {
+            "success": True,
+            "connected": True,
+            "tared": (
+                match.group(1) == "1"
+            ),
+            "calibrated": (
+                match.group(2) == "1"
+            ),
+            "tare_raw": float(
+                match.group(3)
+            ),
+            "count_per_g": float(
+                match.group(4)
+            ),
+            "message": line,
+        }
+
+    # ========================================================
     # STATUS
     # ========================================================
 

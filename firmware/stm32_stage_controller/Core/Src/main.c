@@ -125,7 +125,7 @@ typedef struct
 #define STAGE_USE_LIMIT_INPUTS             1U
 #define STAGE_USE_ESTOP_INPUT              0U
 
-/* PUL: X=PA8/TIM1_CH1, Z=PC6/TIM8_CH1 (CubeMX 설정 유지) */
+/* PUL: X=PE9/TIM1_CH1, Z=PC6/TIM8_CH1 (CubeMX 설정 유지) */
 #define STAGE_X_STEP_CHANNEL               TIM_CHANNEL_1
 #define STAGE_Z_STEP_CHANNEL               TIM_CHANNEL_1
 
@@ -189,6 +189,25 @@ typedef struct
 /* HX711 #1 calibration */
 #define HX711_1_TARE_RAW                    60834.7f
 #define HX711_1_COUNT_PER_G                 668.7673f
+
+/* HX711 #2 (최종 검수 박스 로드셀)
+ * DOUT/DT = PG3 (input), SCK/CLK = PG4 (output)
+ * Channel A, Gain 128 사용
+ *
+ * TARE와 calibration 값은 현재 runtime에서 설정한다.
+ * STM32 재부팅 후에는 다시 TARE/CAL이 필요하다.
+ */
+#define HX711_2_DOUT_GPIO_PORT              GPIOG
+#define HX711_2_DOUT_GPIO_PIN               GPIO_PIN_3
+#define HX711_2_SCK_GPIO_PORT               GPIOG
+#define HX711_2_SCK_GPIO_PIN                GPIO_PIN_4
+#define HX711_2_READY_TIMEOUT_MS            200U
+#define HX711_2_DEFAULT_SAMPLES             10U
+
+static float HX711_2_TareRaw = 0.0f;
+static float HX711_2_CountPerG = 0.0f;
+static bool HX711_2_TareValid = false;
+static bool HX711_2_CalValid = false;
 
 
 /* MG996R gripper servo - PA0 / TIM2_CH1 */
@@ -392,6 +411,116 @@ static int32_t HX711_1_ReadRaw(void)
   }
 
   return (int32_t)value;
+}
+
+
+/* --------------------------------------------------------------------------
+ * HX711 #2 - 최종 검수 박스 로드셀
+ * -------------------------------------------------------------------------- */
+
+static bool HX711_2_IsReady(void)
+{
+  return (HAL_GPIO_ReadPin(HX711_2_DOUT_GPIO_PORT,
+                           HX711_2_DOUT_GPIO_PIN) == GPIO_PIN_RESET);
+}
+
+
+static int32_t HX711_2_ReadRaw(void)
+{
+  uint32_t value = 0U;
+  uint32_t start_ms = HAL_GetTick();
+  uint32_t primask;
+  uint32_t i;
+
+  while (!HX711_2_IsReady())
+  {
+    if ((uint32_t)(HAL_GetTick() - start_ms) >= HX711_2_READY_TIMEOUT_MS)
+    {
+      return INT32_MIN;
+    }
+  }
+
+  for (i = 0U; i < 24U; ++i)
+  {
+    primask = __get_PRIMASK();
+    __disable_irq();
+
+    HAL_GPIO_WritePin(HX711_2_SCK_GPIO_PORT,
+                      HX711_2_SCK_GPIO_PIN,
+                      GPIO_PIN_SET);
+
+    value <<= 1U;
+
+    if (HAL_GPIO_ReadPin(HX711_2_DOUT_GPIO_PORT,
+                         HX711_2_DOUT_GPIO_PIN) == GPIO_PIN_SET)
+    {
+      value |= 1U;
+    }
+
+    HAL_GPIO_WritePin(HX711_2_SCK_GPIO_PORT,
+                      HX711_2_SCK_GPIO_PIN,
+                      GPIO_PIN_RESET);
+
+    if (primask == 0U)
+    {
+      __enable_irq();
+    }
+  }
+
+  /* 25번째 pulse: 다음 변환도 Channel A / Gain 128 */
+  primask = __get_PRIMASK();
+  __disable_irq();
+
+  HAL_GPIO_WritePin(HX711_2_SCK_GPIO_PORT,
+                    HX711_2_SCK_GPIO_PIN,
+                    GPIO_PIN_SET);
+
+  HAL_GPIO_WritePin(HX711_2_SCK_GPIO_PORT,
+                    HX711_2_SCK_GPIO_PIN,
+                    GPIO_PIN_RESET);
+
+  if (primask == 0U)
+  {
+    __enable_irq();
+  }
+
+  if ((value & 0x00800000U) != 0U)
+  {
+    value |= 0xFF000000U;
+  }
+
+  return (int32_t)value;
+}
+
+
+/* 여러 변환값 평균.
+ * false 반환은 중간에 HX711 ready timeout이 발생한 경우입니다. */
+static bool HX711_2_ReadAverage(uint32_t samples, float *average_raw)
+{
+  int64_t sum = 0;
+  uint32_t i;
+
+  if ((samples == 0U) || (average_raw == NULL))
+  {
+    return false;
+  }
+
+  for (i = 0U; i < samples; ++i)
+  {
+    int32_t raw = HX711_2_ReadRaw();
+
+    if (raw == INT32_MIN)
+    {
+      return false;
+    }
+
+    sum += (int64_t)raw;
+  }
+
+  *average_raw =
+      (float)sum / (float)samples;
+
+  return true;
 }
 
 
@@ -1509,6 +1638,208 @@ static void StageProtocol_HandleLine(char *line)
     }
     return;
   }
+  if (strcmp(command, "FINAL_LOAD") == 0)
+  {
+    char *action = strtok_r(NULL, " \t", &save);
+    char output[160];
+
+    if (action == NULL)
+    {
+      StageProtocol_SendText(
+          "ERR FINAL_LOAD BAD_PARAM\r\n");
+      return;
+    }
+
+    StageProtocol_Uppercase(action);
+
+    if (strcmp(action, "RAW") == 0)
+    {
+      int32_t raw = HX711_2_ReadRaw();
+
+      if (raw == INT32_MIN)
+      {
+        StageProtocol_SendText(
+            "ERR FINAL_HX711_TIMEOUT\r\n");
+      }
+      else
+      {
+        (void)snprintf(
+            output,
+            sizeof(output),
+            "FINAL_LOAD_RAW %ld\r\n",
+            (long)raw);
+
+        StageProtocol_SendText(output);
+      }
+
+      return;
+    }
+
+    if (strcmp(action, "TARE") == 0)
+    {
+      float average_raw;
+
+      if (!HX711_2_ReadAverage(
+              HX711_2_DEFAULT_SAMPLES,
+              &average_raw))
+      {
+        StageProtocol_SendText(
+            "ERR FINAL_HX711_TIMEOUT\r\n");
+        return;
+      }
+
+      HX711_2_TareRaw = average_raw;
+      HX711_2_TareValid = true;
+
+      /* 영점이 바뀌면 이전 calibration은 더 이상 신뢰하지 않는다. */
+      HX711_2_CalValid = false;
+      HX711_2_CountPerG = 0.0f;
+
+      (void)snprintf(
+          output,
+          sizeof(output),
+          "OK FINAL_LOAD TARE RAW %.1f SAMPLES %lu\r\n",
+          (double)HX711_2_TareRaw,
+          (unsigned long)HX711_2_DEFAULT_SAMPLES);
+
+      StageProtocol_SendText(output);
+      return;
+    }
+
+    if (strcmp(action, "CAL") == 0)
+    {
+      char *grams_text =
+          strtok_r(NULL, " \t", &save);
+
+      float known_weight_g;
+      float average_raw;
+      float count_per_g;
+
+      if (grams_text == NULL)
+      {
+        StageProtocol_SendText(
+            "ERR FINAL_LOAD CAL_PARAM\r\n");
+        return;
+      }
+
+      known_weight_g =
+          strtof(grams_text, NULL);
+
+      if (known_weight_g <= 0.0f)
+      {
+        StageProtocol_SendText(
+            "ERR FINAL_LOAD CAL_RANGE\r\n");
+        return;
+      }
+
+      if (!HX711_2_TareValid)
+      {
+        StageProtocol_SendText(
+            "ERR FINAL_LOAD NOT_TARED\r\n");
+        return;
+      }
+
+      if (!HX711_2_ReadAverage(
+              HX711_2_DEFAULT_SAMPLES,
+              &average_raw))
+      {
+        StageProtocol_SendText(
+            "ERR FINAL_HX711_TIMEOUT\r\n");
+        return;
+      }
+
+      count_per_g =
+          (average_raw - HX711_2_TareRaw)
+          / known_weight_g;
+
+      /* 배선 방향에 따라 음수가 되는 것은 정상이다.
+       * 단, 거의 0이면 calibration 실패로 본다. */
+      if ((count_per_g > -0.001f) &&
+          (count_per_g < 0.001f))
+      {
+        StageProtocol_SendText(
+            "ERR FINAL_LOAD CAL_ZERO\r\n");
+        return;
+      }
+
+      HX711_2_CountPerG = count_per_g;
+      HX711_2_CalValid = true;
+
+      (void)snprintf(
+          output,
+          sizeof(output),
+          "OK FINAL_LOAD CAL WEIGHT_G %.1f COUNT_PER_G %.4f\r\n",
+          (double)known_weight_g,
+          (double)HX711_2_CountPerG);
+
+      StageProtocol_SendText(output);
+      return;
+    }
+
+    if (strcmp(action, "WEIGHT") == 0)
+    {
+      float average_raw;
+      float weight_g;
+
+      if (!HX711_2_TareValid)
+      {
+        StageProtocol_SendText(
+            "ERR FINAL_LOAD NOT_TARED\r\n");
+        return;
+      }
+
+      if (!HX711_2_CalValid)
+      {
+        StageProtocol_SendText(
+            "ERR FINAL_LOAD NOT_CALIBRATED\r\n");
+        return;
+      }
+
+      if (!HX711_2_ReadAverage(
+              HX711_2_DEFAULT_SAMPLES,
+              &average_raw))
+      {
+        StageProtocol_SendText(
+            "ERR FINAL_HX711_TIMEOUT\r\n");
+        return;
+      }
+
+      weight_g =
+          (average_raw - HX711_2_TareRaw)
+          / HX711_2_CountPerG;
+
+      (void)snprintf(
+          output,
+          sizeof(output),
+          "FINAL_LOAD WEIGHT_G %.1f RAW_AVG %.1f SAMPLES %lu\r\n",
+          (double)weight_g,
+          (double)average_raw,
+          (unsigned long)HX711_2_DEFAULT_SAMPLES);
+
+      StageProtocol_SendText(output);
+      return;
+    }
+
+    if (strcmp(action, "STATUS") == 0)
+    {
+      (void)snprintf(
+          output,
+          sizeof(output),
+          "FINAL_LOAD STATUS TARED %u CALIBRATED %u TARE_RAW %.1f COUNT_PER_G %.4f\r\n",
+          HX711_2_TareValid ? 1U : 0U,
+          HX711_2_CalValid ? 1U : 0U,
+          (double)HX711_2_TareRaw,
+          (double)HX711_2_CountPerG);
+
+      StageProtocol_SendText(output);
+      return;
+    }
+
+    StageProtocol_SendText(
+        "ERR FINAL_LOAD BAD_PARAM\r\n");
+    return;
+  }
+
   if (strcmp(command, "GRIP") == 0)
   {
     char *action = strtok_r(NULL, " \t", &save);
@@ -2191,6 +2522,22 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(HX711_1_SCK_GPIO_PORT, &GPIO_InitStruct);
+
+  /* HX711 #2: PG3=DOUT(input), PG4=SCK(output, idle LOW) */
+  GPIO_InitStruct.Pin = HX711_2_DOUT_GPIO_PIN;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(HX711_2_DOUT_GPIO_PORT, &GPIO_InitStruct);
+
+  HAL_GPIO_WritePin(HX711_2_SCK_GPIO_PORT,
+                    HX711_2_SCK_GPIO_PIN,
+                    GPIO_PIN_RESET);
+
+  GPIO_InitStruct.Pin = HX711_2_SCK_GPIO_PIN;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(HX711_2_SCK_GPIO_PORT, &GPIO_InitStruct);
 
 #if STAGE_USE_LIMIT_INPUTS
   /* NC 리미트 4개: 정상 LOW, 작동/단선 HIGH */

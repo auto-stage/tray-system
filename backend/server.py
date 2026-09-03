@@ -23,7 +23,11 @@ from services.inspection_service import InspectionService
 from workflow.workflow_controller import WorkflowController
 from workflow.material_flow_controller import MaterialFlowController
 from workflow.material_flow_executor import MaterialFlowExecutor
-from parts_db import find_part, load_parts_catalog
+from parts_db import (
+    find_part,
+    find_part_by_identifier,
+    load_parts_catalog,
+)
 
 import asyncio
 import json
@@ -548,6 +552,57 @@ else:
     raise RuntimeError(
         f"지원하지 않는 LOADCELL_MODE: {LOADCELL_MODE}"
     )
+
+
+# ============================================================
+# 최종 검수 박스 Load Cell / HX711 #2
+#
+# 기존 캐리지 Load Cell과는 완전히 별도 장치이다.
+# 기본 모드는 LOADCELL_MODE를 따라가며 필요 시
+# FINAL_LOADCELL_MODE 환경변수로 독립 설정할 수 있다.
+# ============================================================
+
+FINAL_LOADCELL_MODE = os.getenv(
+    "FINAL_LOADCELL_MODE",
+    LOADCELL_MODE,
+).strip().lower()
+
+if FINAL_LOADCELL_MODE == "stm32":
+    if STAGE_MODE != "stm32":
+        raise RuntimeError(
+            "FINAL_LOADCELL_MODE=stm32 사용 시 "
+            "STAGE_MODE=stm32도 함께 설정해야 합니다."
+        )
+
+    from adapters.stm32_final_loadcell_adapter import (
+        STM32FinalLoadCellAdapter,
+    )
+
+    final_loadcell = STM32FinalLoadCellAdapter(
+        stage=stage,
+    )
+
+    print(
+        "[FINAL LOAD CELL] STM32 HX711 #2 실제 모드"
+    )
+
+elif FINAL_LOADCELL_MODE == "mock":
+    from adapters.mock_final_loadcell_adapter import (
+        MockFinalLoadCellAdapter,
+    )
+
+    final_loadcell = MockFinalLoadCellAdapter()
+
+    print(
+        "[FINAL LOAD CELL] MOCK 모드"
+    )
+
+else:
+    raise RuntimeError(
+        "지원하지 않는 FINAL_LOADCELL_MODE: "
+        f"{FINAL_LOADCELL_MODE}"
+    )
+
 
 # ============================================================
 # Material Flow 장치 구성
@@ -2026,6 +2081,185 @@ class YoloConfidenceRequest(BaseModel):
 
 class YoloClassificationTestRequest(BaseModel):
     ground_truth_class_key: str
+
+
+class FinalLoadCellCalibrationRequest(BaseModel):
+    known_weight_g: float = Field(
+        gt=0.0,
+        description="Calibration 기준추 무게(g)",
+    )
+
+
+@app.get("/final-loadcell/status")
+def final_loadcell_status():
+
+    return final_loadcell.get_status()
+
+
+@app.get("/final-loadcell/raw")
+def final_loadcell_raw():
+
+    return final_loadcell.read_raw()
+
+
+@app.post("/final-loadcell/tare")
+def final_loadcell_tare():
+
+    return final_loadcell.tare()
+
+
+@app.post("/final-loadcell/calibrate")
+def final_loadcell_calibrate(
+    request: FinalLoadCellCalibrationRequest,
+):
+
+    return final_loadcell.calibrate(
+        request.known_weight_g
+    )
+
+
+@app.get("/final-loadcell/weight")
+def final_loadcell_weight():
+
+    return final_loadcell.read_weight()
+
+
+class FinalVerificationItem(BaseModel):
+    part_no: str
+    quantity: int = Field(ge=1)
+
+
+class FinalVerificationRequest(BaseModel):
+    items: list[FinalVerificationItem]
+    tolerance_g: float = Field(default=5.0, ge=0.0)
+
+
+@app.post("/final-verification/check")
+def final_verification_check(
+    request: FinalVerificationRequest,
+):
+    """
+    작업지시 품목의 예상 총중량과
+    최종 박스 HX711 #2 실측 중량을 비교한다.
+    """
+
+    if not request.items:
+        return {
+            "success": False,
+            "passed": False,
+            "message": "검수할 품목이 없습니다.",
+        }
+
+    expected_weight_g = 0.0
+    breakdown = []
+
+    for item in request.items:
+        part = find_part_by_identifier(
+            item.part_no,
+            catalog=parts_catalog,
+        )
+
+        if part is None:
+            return {
+                "success": False,
+                "passed": False,
+                "message": (
+                    f"등록되지 않은 품번입니다: "
+                    f"{item.part_no}"
+                ),
+            }
+
+        unit_weight = part.get("weight_g")
+
+        if unit_weight is None:
+            return {
+                "success": False,
+                "passed": False,
+                "message": (
+                    f"{item.part_no} "
+                    "실측 단위중량(weight_g)이 "
+                    "등록되지 않았습니다."
+                ),
+            }
+
+        unit_weight_g = float(unit_weight)
+
+        if unit_weight_g <= 0.0:
+            return {
+                "success": False,
+                "passed": False,
+                "message": (
+                    f"{item.part_no} "
+                    "weight_g 값이 올바르지 않습니다."
+                ),
+            }
+
+        total_weight_g = (
+            unit_weight_g
+            * item.quantity
+        )
+
+        expected_weight_g += total_weight_g
+
+        breakdown.append({
+            "part_no": item.part_no,
+            "name": part.get("display_name"),
+            "quantity": item.quantity,
+            "unit_weight_g": unit_weight_g,
+            "expected_weight_g": total_weight_g,
+        })
+
+    measurement = final_loadcell.read_weight()
+
+    if not measurement.get("success"):
+        return {
+            "success": False,
+            "passed": False,
+            "message": measurement.get(
+                "message",
+                "최종 Load Cell 측정 실패",
+            ),
+            "loadcell": measurement,
+        }
+
+    measured_weight_g = float(
+        measurement["weight_g"]
+    )
+
+    difference_g = abs(
+        measured_weight_g
+        - expected_weight_g
+    )
+
+    passed = (
+        difference_g
+        <= request.tolerance_g
+    )
+
+    return {
+        "success": True,
+        "passed": passed,
+        "expected_weight_g": round(
+            expected_weight_g,
+            3,
+        ),
+        "measured_weight_g": round(
+            measured_weight_g,
+            3,
+        ),
+        "difference_g": round(
+            difference_g,
+            3,
+        ),
+        "tolerance_g": request.tolerance_g,
+        "breakdown": breakdown,
+        "loadcell": measurement,
+        "message": (
+            "최종 중량 검수 PASS"
+            if passed
+            else "최종 중량 검수 FAIL"
+        ),
+    }
 
 
 @app.get("/loadcell/status")
