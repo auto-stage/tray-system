@@ -46,8 +46,14 @@ integration:
       z: null
 
   correction_loop:
-    # Planned closed-loop sequence:
-    # slot move -> observe -> X/Z correction -> re-observe -> verify.
+    # Material Flow ArUco operation mode:
+    # disabled: alignment BYPASS; no camera/motion required.
+    # observe_only: ArUco observation only; no Stage correction.
+    # closed_loop: observe -> X/Z correction -> re-observe.
+    mode: "disabled"
+
+    # Closed-loop safety switch. Used only by closed_loop mode.
+    # Kept for backward compatibility.
     enabled: false
     max_iterations: 2
     reobserve_after_move: true

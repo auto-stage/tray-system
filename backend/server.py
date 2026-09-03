@@ -20,6 +20,7 @@ from adapters.mock_loadcell_adapter import MockLoadCellAdapter
 from adapters.mock_part_inspection_adapter import MockPartInspectionAdapter
 from adapters.work_order_camera_adapter import WorkOrderCameraAdapter
 from services.inspection_service import InspectionService
+from services.aruco_alignment_mode import load_alignment_mode
 from workflow.workflow_controller import WorkflowController
 from workflow.material_flow_controller import MaterialFlowController
 from workflow.material_flow_executor import MaterialFlowExecutor
@@ -46,6 +47,30 @@ import uuid
 # ============================================================
 
 BASE_DIR = Path(__file__).resolve().parent
+
+ARUCO_SYSTEM_CONFIG_PATH = (
+    BASE_DIR.parent
+    / "modules"
+    / "aruco_tray_vision"
+    / "config"
+    / "system.yaml"
+)
+
+ARUCO_ALIGNMENT_MODE = load_alignment_mode(
+    ARUCO_SYSTEM_CONFIG_PATH,
+    override=os.getenv("ARUCO_ALIGNMENT_MODE"),
+)
+
+print("[ARUCO ALIGNMENT]", f"mode={ARUCO_ALIGNMENT_MODE}")
+
+
+def build_material_flow_alignment_callback():
+    if ARUCO_ALIGNMENT_MODE == "disabled":
+        return None
+    if ARUCO_ALIGNMENT_MODE == "observe_only":
+        return lambda tray_id: material_flow_observe_callback(tray_id)
+    return lambda tray_id: material_flow_alignment_callback(tray_id)
+
 
 UPLOAD_DIR = BASE_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
@@ -655,9 +680,7 @@ if (
         gripper_servo_bypass=GRIPPER_SERVO_BYPASS,
         # 실제 Stage에서는 ArUco 정렬을 BYPASS하지 않는다.
         # 함수 정의는 파일 뒤쪽에 있지만 callback은 실행 시점에 조회된다.
-        alignment_callback=(
-            lambda tray_id: material_flow_alignment_callback(tray_id)
-        ),
+        alignment_callback=build_material_flow_alignment_callback(),
     )
 
     print(
@@ -689,11 +712,7 @@ elif (
         gripper_servo_bypass=GRIPPER_SERVO_BYPASS,
         # Mock 장치 시험은 기존 BYPASS를 유지하되, 실제 ArUco 카메라를
         # 선택한 경우에는 동일한 정렬 callback으로 통합 시퀀스를 검증한다.
-        alignment_callback=(
-            (lambda tray_id: material_flow_alignment_callback(tray_id))
-            if VISION_MODE == "aruco"
-            else None
-        ),
+        alignment_callback=build_material_flow_alignment_callback(),
     )
 
     print(
@@ -2765,6 +2784,20 @@ class VisionAlignRequest(BaseModel):
     expected_tray_id: int
 
 
+@app.get("/vision/alignment-mode")
+def vision_alignment_mode():
+    return {
+        "success": True,
+        "mode": ARUCO_ALIGNMENT_MODE,
+        "vision_mode": VISION_MODE,
+        "correction_loop_enabled": (
+            aruco_vision.get_correction_loop_config().get("enabled")
+            if hasattr(aruco_vision, "get_correction_loop_config")
+            else None
+        ),
+    }
+
+
 @app.post("/vision/align")
 def vision_align(request: VisionAlignRequest):
     """
@@ -2917,6 +2950,52 @@ def vision_align(request: VisionAlignRequest):
         "success": False,
         "error": "ALIGNMENT_INTERNAL_ERROR",
         "steps": steps,
+    }
+
+
+def material_flow_observe_callback(tray_id: int):
+    """Observe expected Tray without moving the Stage."""
+    if VISION_MODE != "aruco":
+        return {
+            "success": False,
+            "mode": "observe_only",
+            "observed": False,
+            "error": "ALIGNMENT_UNAVAILABLE",
+            "message": "observe_only 모드는 VISION_MODE=aruco가 필요합니다.",
+        }
+
+    if not aruco_camera_enabled:
+        return {
+            "success": False,
+            "mode": "observe_only",
+            "observed": False,
+            "error": "ARUCO_CAMERA_DISABLED",
+            "message": "ArUco 카메라가 비활성화되어 관측할 수 없습니다.",
+        }
+
+    detection = aruco_vision.detect_tray_aruco(expected_tray_id=int(tray_id))
+    if not detection.get("success") or not detection.get("detected"):
+        return {
+            "success": False,
+            "mode": "observe_only",
+            "observed": False,
+            "aligned": False,
+            "error": detection.get("error_code", detection.get("error", "VISION_FAILED")),
+            "message": detection.get("message", "ArUco 관측에 실패했습니다."),
+            "final_detection": detection,
+        }
+
+    alignment_ok = detection.get("alignment_ok")
+    return {
+        "success": True,
+        "mode": "observe_only",
+        "observed": True,
+        "stage_moved": False,
+        "aligned": alignment_ok,
+        "verified": alignment_ok is True,
+        "correction_available": bool(detection.get("ready_for_stage_correction")),
+        "final_detection": detection,
+        "message": "ArUco Tray 관측 성공. observe_only 모드이므로 Stage 보정 이동은 실행하지 않았습니다.",
     }
 
 
