@@ -639,7 +639,11 @@ if (
         gripper=gripper,
         loadcell=loadcell,
         gripper_stepper=gripper_stepper,
-        alignment_callback=None,
+        # 실제 Stage에서는 ArUco 정렬을 BYPASS하지 않는다.
+        # 함수 정의는 파일 뒤쪽에 있지만 callback은 실행 시점에 조회된다.
+        alignment_callback=(
+            lambda tray_id: material_flow_alignment_callback(tray_id)
+        ),
     )
 
     print(
@@ -668,7 +672,13 @@ elif (
         gripper=gripper,
         loadcell=loadcell,
         gripper_stepper=gripper_stepper,
-        alignment_callback=None,
+        # Mock 장치 시험은 기존 BYPASS를 유지하되, 실제 ArUco 카메라를
+        # 선택한 경우에는 동일한 정렬 callback으로 통합 시퀀스를 검증한다.
+        alignment_callback=(
+            (lambda tray_id: material_flow_alignment_callback(tray_id))
+            if VISION_MODE == "aruco"
+            else None
+        ),
     )
 
     print(
@@ -2757,6 +2767,55 @@ def vision_align(request: VisionAlignRequest):
         "error": "ALIGNMENT_INTERNAL_ERROR",
         "steps": steps,
     }
+
+
+def material_flow_alignment_callback(tray_id: int):
+    """
+    MaterialFlowExecutor에서 사용하는 ArUco 정렬 callback.
+
+    수동 /vision/align API와 동일한 폐루프 보정 로직을 재사용하되,
+    자동 파지 시퀀스에서는 재관측으로 aligned=True가 확인된 경우만
+    다음 단계로 진행하도록 강제한다.
+    """
+    if VISION_MODE != "aruco":
+        return {
+            "success": False,
+            "aligned": False,
+            "error": "ALIGNMENT_UNAVAILABLE",
+            "message": (
+                "실제 Material Flow에서 ArUco 정렬을 BYPASS할 수 없습니다. "
+                "VISION_MODE=aruco로 실행하세요."
+            ),
+        }
+
+    if not aruco_camera_enabled:
+        return {
+            "success": False,
+            "aligned": False,
+            "error": "ARUCO_CAMERA_DISABLED",
+            "message": "ArUco 카메라가 비활성화되어 있어 자동 정렬을 실행할 수 없습니다.",
+        }
+
+    result = vision_align(
+        VisionAlignRequest(expected_tray_id=int(tray_id))
+    )
+
+    if not result.get("success", False):
+        return result
+
+    if result.get("aligned") is not True:
+        return {
+            **result,
+            "success": False,
+            "aligned": False,
+            "error": "ALIGNMENT_NOT_VERIFIED",
+            "message": (
+                "자동 Material Flow에서는 Stage 보정 후 ArUco 재관측으로 "
+                "정렬 완료가 확인되어야 합니다."
+            ),
+        }
+
+    return result
 
 
 # ============================================================

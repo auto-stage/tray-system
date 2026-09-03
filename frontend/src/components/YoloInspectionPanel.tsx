@@ -43,12 +43,29 @@ export default function YoloInspectionPanel({ connected, inspectionEnabled }: { 
         readJson('/inspection/yolo/status'),
         readJson('/inspection/yolo/images'),
       ])
+      const nextImageList = nextImages.images ?? []
+      const nextClassList = nextStatus.classes ?? []
+      const nextBaseModels = nextStatus.base_models ?? []
+
       setStatus(nextStatus)
-      setImages(nextImages.images ?? [])
-      const firstClass = nextStatus.classes?.[0]?.class_key
-      if (!selectedClass && firstClass) setSelectedClass(firstClass)
-      if (!baseModel && nextStatus.base_models?.[0]?.id) setBaseModel(nextStatus.base_models[0].id)
-      if (!selectedId && nextImages.images?.[0]?.image_id) setSelectedId(nextImages.images[0].image_id)
+      setImages(nextImageList)
+
+      // refresh() is called from a 2-second polling timer created only once.
+      // Use functional updates so that the timer never restores stale initial
+      // selections over the operator's current class/image/model choice.
+      setSelectedClass(current => {
+        if (current && nextClassList.some((item: any) => item.class_key === current)) return current
+        return nextClassList[0]?.class_key ?? ''
+      })
+      setBaseModel(current => {
+        if (current && nextBaseModels.some((item: any) => item.id === current)) return current
+        return nextBaseModels[0]?.id ?? ''
+      })
+      setSelectedId(current => {
+        if (current && nextImageList.some((item: any) => item.image_id === current)) return current
+        return nextImageList[0]?.image_id ?? ''
+      })
+
       if (Number.isFinite(Number(nextStatus.inference?.confidence_threshold))) setThreshold(Number(nextStatus.inference.confidence_threshold))
     } catch (error) {
       setMessage(error instanceof Error ? `ERROR: ${error.message}` : 'ERROR')
@@ -67,8 +84,13 @@ export default function YoloInspectionPanel({ connected, inspectionEnabled }: { 
       class_key: box.class_key, x: Number(box.x), y: Number(box.y),
       width: Number(box.width), height: Number(box.height), confidence: box.confidence,
     })))
-    if (selectedImage.suggested_class_key) setSelectedClass(selectedImage.suggested_class_key)
-  }, [selectedId, selectedImage?.updated_at, selectedImage?.captured_at])
+  }, [selectedImage?.image_id, selectedImage?.updated_at, selectedImage?.captured_at])
+
+  useEffect(() => {
+    // Apply the capture-time class hint only when another image is opened.
+    // Annotation save/refresh must not roll back a class the operator selected.
+    if (selectedImage?.suggested_class_key) setSelectedClass(selectedImage.suggested_class_key)
+  }, [selectedImage?.image_id])
 
   useEffect(() => {
     if (tab !== 'live' || !status?.inference?.model_ready) return
@@ -178,6 +200,13 @@ export default function YoloInspectionPanel({ connected, inspectionEnabled }: { 
               <button className="btn-secondary" disabled={selectedIndex <= 0} onClick={() => setSelectedId(images[selectedIndex - 1].image_id)}>← 이전 이미지</button>
               <strong style={{ flex: 1, textAlign: 'center', padding: 6 }}>{selectedIndex + 1} / {images.length} · {selectedImage.annotation_state}</strong>
               <button className="btn-secondary" disabled={selectedIndex < 0 || selectedIndex >= images.length - 1} onClick={() => setSelectedId(images[selectedIndex + 1].image_id)}>다음 이미지 →</button>
+            </div>
+            <div style={{ display: 'flex', gap: 7, alignItems: 'center', marginBottom: 7, padding: 7, background: '#f8fafc', border: '1px solid #dbe3ec' }}>
+              <strong style={{ fontSize: 10 }}>새 Box Class</strong>
+              <select value={selectedClass} onChange={event => setSelectedClass(event.target.value)} style={{ minWidth: 190, padding: 6 }}>
+                {classes.map((item: any) => <option key={item.class_key} value={item.class_key}>{item.display_name} · {item.class_key}</option>)}
+              </select>
+              <span style={{ fontSize: 9, color: '#64748b' }}>선택한 Class는 다음에 새로 그리는 Box에 적용됩니다.</span>
             </div>
             <YoloAnnotationCanvas imageUrl={`${API}/inspection/yolo/images/${selectedId}?v=${selectedImage.updated_at ?? selectedImage.captured_at}`} imageWidth={Number(selectedImage.width)} imageHeight={Number(selectedImage.height)} boxes={boxes} selectedClass={selectedClass || classes[0]?.class_key} classLabels={classLabels} onChange={setBoxes} />
             <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
