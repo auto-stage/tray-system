@@ -593,6 +593,17 @@ FINAL_LOADCELL_MODE = os.getenv(
     LOADCELL_MODE,
 ).strip().lower()
 
+# Mock 최종 중량 검수에서 PASS/FAIL 시나리오를 만들기 위한 오프셋.
+# 0g이면 예상 중량과 동일(PASS), 예: 10g이면 tolerance 5g 기준 FAIL.
+try:
+    MOCK_FINAL_WEIGHT_OFFSET_G = float(
+        os.getenv("MOCK_FINAL_WEIGHT_OFFSET_G", "0")
+    )
+except ValueError as error:
+    raise RuntimeError(
+        "MOCK_FINAL_WEIGHT_OFFSET_G는 숫자여야 합니다."
+    ) from error
+
 if FINAL_LOADCELL_MODE == "stm32":
     if STAGE_MODE != "stm32":
         raise RuntimeError(
@@ -737,6 +748,15 @@ PART_INSPECTION_MODE = os.getenv(
     str(WORK_ORDER_INSPECTION_CONFIG.get("detector", "opencv_baseline")),
 ).strip().lower()
 
+# 현재 운용은 작업자가 화면의 지시 수량만큼 직접 피킹한다.
+# 모델의 정확한 개수 계수 능력이 확보될 때까지 중간 검수는 기본 OFF.
+MID_INSPECTION_ENABLED = (
+    os.getenv("MID_INSPECTION_ENABLED", "0")
+    .strip()
+    .lower()
+    in {"1", "true", "yes", "on"}
+)
+
 TRAY_VISION_ENABLED = (
     os.getenv("TRAY_VISION_ENABLED", "0")
     .strip()
@@ -753,6 +773,7 @@ FINAL_VISION_ENABLED = (
 
 print(
     "[INSPECTION CONFIG]",
+    f"mid_inspection={'ON' if MID_INSPECTION_ENABLED else 'OFF'}",
     f"tray_vision={'ON' if TRAY_VISION_ENABLED else 'OFF'}",
     f"final_vision={'ON' if FINAL_VISION_ENABLED else 'OFF'}",
 )
@@ -2274,6 +2295,17 @@ def final_verification_check(
             "expected_weight_g": total_weight_g,
         })
 
+    # Mock 모드에서는 실제 HX711 #2가 없으므로 계산된 예상 중량을
+    # Mock 센서에 주입해 UI의 최종 무게 검수 흐름을 실제처럼 검증한다.
+    # MOCK_FINAL_WEIGHT_OFFSET_G로 정상/불량 시나리오를 선택할 수 있다.
+    if (
+        FINAL_LOADCELL_MODE == "mock"
+        and hasattr(final_loadcell, "set_mock_weight")
+    ):
+        final_loadcell.set_mock_weight(
+            expected_weight_g + MOCK_FINAL_WEIGHT_OFFSET_G
+        )
+
     measurement = final_loadcell.read_weight()
 
     if not measurement.get("success"):
@@ -2447,6 +2479,7 @@ def loadcell_tare():
 def inspection_config():
     return {
         "success": True,
+        "mid_inspection_enabled": MID_INSPECTION_ENABLED,
         "tray_vision_enabled": TRAY_VISION_ENABLED,
         "final_vision_enabled": FINAL_VISION_ENABLED,
     }
@@ -3741,6 +3774,18 @@ def workflow_tray_arrived():
         "success": True,
         "data":
             workflow.tray_arrived(),
+    }
+
+
+@app.post(
+    "/workflow/picking-complete"
+)
+def workflow_picking_complete():
+
+    return {
+        "success": True,
+        "data":
+            workflow.picking_complete(),
     }
 
 

@@ -17,8 +17,10 @@ def test_parts_yaml_is_authoritative_for_tray_mapping(monkeypatch, tmp_path):
     parts = yaml.safe_load(
         (BACKEND_DIR / "config" / "parts.yaml").read_text(encoding="utf-8")
     )
-    parts["parts"]["t_bolt"]["tray_id"] = 4
-    parts["parts"]["flange_nut"]["tray_id"] = 1
+    t_bolt_tray = parts["parts"]["t_bolt"]["tray_id"]
+    flange_nut_tray = parts["parts"]["flange_nut"]["tray_id"]
+    parts["parts"]["t_bolt"]["tray_id"] = flange_nut_tray
+    parts["parts"]["flange_nut"]["tray_id"] = t_bolt_tray
 
     parts_path = tmp_path / "parts.yaml"
     parts_path.write_text(
@@ -53,8 +55,8 @@ def test_parts_yaml_is_authoritative_for_tray_mapping(monkeypatch, tmp_path):
 
     result = inventory_service.get_all_inventory()
 
-    assert result["B001"]["tray"] == 4
+    assert result["B001"]["tray"] == flange_nut_tray
     assert result["B001"]["name"] == "T 볼트"
     assert result["B001"]["part_no"] == "B001"
-    assert result["N001"]["tray"] == 1
+    assert result["N001"]["tray"] == t_bolt_tray
     assert result["N001"]["name"] == "플랜지 너트"

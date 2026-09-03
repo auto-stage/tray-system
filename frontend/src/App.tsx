@@ -107,12 +107,14 @@ function formatDate(d: Date) {
 }
 
 type InspectionVisionFlags = {
+  midInspectionEnabled: boolean
   trayVisionEnabled: boolean
   finalVisionEnabled: boolean
 }
 
 function useInspectionVisionFlags(): InspectionVisionFlags {
   const [flags, setFlags] = useState<InspectionVisionFlags>({
+    midInspectionEnabled: false,
     trayVisionEnabled: false,
     finalVisionEnabled: false,
   })
@@ -134,6 +136,8 @@ function useInspectionVisionFlags(): InspectionVisionFlags {
 
         if (!cancelled) {
           setFlags({
+            midInspectionEnabled:
+              result?.mid_inspection_enabled === true,
             trayVisionEnabled:
               result?.tray_vision_enabled === true,
             finalVisionEnabled:
@@ -2381,6 +2385,7 @@ function NextTraySupplyPanel({
 // ============================================================
 function PickingScreen({
   item, itemIndex, totalItems, nextItem, isPaused, showStop,
+  inspectionEnabled, onCompleteWithoutInspection,
   onAutoVerify, onManualVerify, onPause, onStop
 }: {
   item: WorkItem
@@ -2389,6 +2394,8 @@ function PickingScreen({
   nextItem: WorkItem | null
   isPaused: boolean
   showStop: boolean
+  inspectionEnabled: boolean
+  onCompleteWithoutInspection: () => void
   onAutoVerify: () => void
   onManualVerify: () => void
   onPause: () => void
@@ -2567,9 +2574,15 @@ function PickingScreen({
                 fontWeight: 800
               }}
               disabled={!canComplete}
-              onClick={onAutoVerify}
+              onClick={
+                inspectionEnabled
+                  ? onAutoVerify
+                  : onCompleteWithoutInspection
+              }
             >
-              ✓ 피킹 완료 → 검수
+              {inspectionEnabled
+                ? '✓ 피킹 완료 → 검수'
+                : '✓ 피킹 완료'}
             </button>
 
             {/* 예외 조작 */}
@@ -2599,17 +2612,19 @@ function PickingScreen({
                 ⏸ 일시 정지
               </button>
 
-              <button
-                className="btn-secondary"
-                style={{
-                  width: '100%',
-                  padding: '9px',
-                  fontSize: 12
-                }}
-                onClick={onManualVerify}
-              >
-                수동 확인
-              </button>
+              {inspectionEnabled && (
+                <button
+                  className="btn-secondary"
+                  style={{
+                    width: '100%',
+                    padding: '9px',
+                    fontSize: 12
+                  }}
+                  onClick={onManualVerify}
+                >
+                  수동 확인
+                </button>
+              )}
 
               <button
                 className="btn-danger"
@@ -7787,6 +7802,7 @@ export default function App() {
   const [restartKey, setRestartKey] = useState(0)
   const [verificationMode, setVerificationMode] = useState<'AUTO' | 'MANUAL'>('AUTO')
   const [workHistory, setWorkHistory] = useState<WorkHistoryRecord[]>([])
+  const inspectionFlags = useInspectionVisionFlags()
 
 
 
@@ -9306,6 +9322,45 @@ export default function App() {
   }
 
 
+  const requestWorkflowPickingComplete = async () => {
+    try {
+      const response = await fetch(
+        'http://127.0.0.1:8000/workflow/picking-complete',
+        { method: 'POST' }
+      )
+
+      if (!response.ok) {
+        throw new Error(
+          `Workflow picking-complete 오류: ${response.status}`
+        )
+      }
+
+      const result = await response.json()
+
+      if (!result.success) {
+        throw new Error(
+          result.message || '피킹 완료 처리 실패'
+        )
+      }
+
+      console.log(
+        '[WORKFLOW] 중간 검수 SKIP / 피킹 완료:',
+        result.data
+      )
+
+      return result.data
+
+    } catch (error) {
+      console.error(
+        '[WORKFLOW] 피킹 완료 처리 실패:',
+        error
+      )
+
+      return null
+    }
+  }
+
+
   const requestWorkflowStartVision = async () => {
     try {
       const response = await fetch(
@@ -9941,23 +9996,13 @@ export default function App() {
     setVerificationMode('MANUAL')
     nav('VERIFICATION')
   }
-  const handleVerificationNext = async () => {
-    const workflowState =
-      await requestWorkflowVisionPassed()
-
-    if (!workflowState) {
-      alert(
-        'Vision 완료 상태를 Workflow에 반영하지 못했습니다.'
-      )
-      return
-    }
-
+  const completeCurrentItem = async (workflowState: any) => {
     if (
-      workflowState.state !==
-      'ITEM_COMPLETE'
+      !workflowState ||
+      workflowState.state !== 'ITEM_COMPLETE'
     ) {
       alert(
-        `Workflow 상태 오류: ${workflowState.state}`
+        `Workflow 상태 오류: ${workflowState?.state ?? 'NO RESPONSE'}`
       )
       return
     }
@@ -9995,8 +10040,35 @@ export default function App() {
     }
 
     // 마지막 품목이더라도 ITEM_COMPLETE를 먼저 보여준다.
-    // Worker Workflow와 Stage 공급 Workflow는 서로 독립적이다.
     nav('ITEM_COMPLETE')
+  }
+
+  const handlePickingCompleteWithoutInspection = async () => {
+    const workflowState =
+      await requestWorkflowPickingComplete()
+
+    if (!workflowState) {
+      alert(
+        '피킹 완료 상태를 Workflow에 반영하지 못했습니다.'
+      )
+      return
+    }
+
+    await completeCurrentItem(workflowState)
+  }
+
+  const handleVerificationNext = async () => {
+    const workflowState =
+      await requestWorkflowVisionPassed()
+
+    if (!workflowState) {
+      alert(
+        'Vision 완료 상태를 Workflow에 반영하지 못했습니다.'
+      )
+      return
+    }
+
+    await completeCurrentItem(workflowState)
   }
 
   const handleItemNext = async () => {
@@ -10470,6 +10542,8 @@ export default function App() {
             }
             isPaused={isPaused}
             showStop={showStopConfirm}
+            inspectionEnabled={inspectionFlags.midInspectionEnabled}
+            onCompleteWithoutInspection={handlePickingCompleteWithoutInspection}
             onAutoVerify={handlePickingAutoVerify}
             onManualVerify={handlePickingManualVerify}
             onPause={handlePause}

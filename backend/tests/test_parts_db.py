@@ -29,7 +29,17 @@ class PartsDatabaseTest(unittest.TestCase):
                 "l_bracket",
             },
         )
-        self.assertTrue(all(item["weight_g"] is None for item in catalog.values()))
+        self.assertEqual(
+            {key: float(item["weight_g"]) for key, item in catalog.items()},
+            {
+                "flange_nut": 10.0,
+                "t_bolt": 20.0,
+                "socket_head_bolt": 30.0,
+                "corner_bracket": 40.0,
+                "t_nut": 50.0,
+                "l_bracket": 60.0,
+            },
+        )
 
     def test_part_number_and_alias_resolve_to_canonical_class(self) -> None:
         self.assertEqual(find_part_by_identifier("B001")["class_key"], "t_bolt")

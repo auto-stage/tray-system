@@ -48,9 +48,22 @@ class WorkflowController:
 
         return self.get_status()
 
+    def picking_complete(self):
+        """
+        작업자가 지시 수량만큼 수동 피킹을 완료했을 때.
+
+        중간 부품/수량 검수 기능이 비활성화된 운용에서는
+        PICKING에서 ITEM_COMPLETE로 바로 전이한다.
+        """
+
+        self.state = "ITEM_COMPLETE"
+
+        return self.get_status()
+
     def start_vision_check(self):
         """
         피킹 후 카메라 검증 단계 진입.
+        (MID_INSPECTION_ENABLED=1일 때의 호환 경로)
         """
 
         self.state = "VISION_CHECK"
