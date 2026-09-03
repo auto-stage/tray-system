@@ -3,36 +3,36 @@
     "tray": 6,
     "name": "T 볼트",
     "spec": "-",
-    "stock": 30
+    "stock": 16
   },
   "B002": {
     "tray": 5,
     "name": "렌치 볼트",
     "spec": "-",
-    "stock": 30
+    "stock": 16
   },
   "S001": {
     "tray": 1,
     "name": "코너 브라켓",
     "spec": "-",
-    "stock": 30
+    "stock": 13
   },
   "N001": {
     "tray": 4,
     "name": "플랜지 너트",
     "spec": "-",
-    "stock": 30
+    "stock": 16
   },
   "W001": {
     "tray": 3,
     "name": "T 너트",
     "spec": "-",
-    "stock": 30
+    "stock": 17
   },
   "W002": {
     "tray": 2,
     "name": "L형 브라켓",
     "spec": "-",
-    "stock": 30
+    "stock": 10
   }
 }
