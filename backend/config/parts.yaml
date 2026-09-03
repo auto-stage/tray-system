@@ -28,7 +28,7 @@ parts:
     display_name: "T 볼트"
     ocr_aliases: ["T 볼트", "T볼트"]
     part_no: "B001"
-    tray_id: 1
+    tray_id: 6
     nominal_size: null
     diameter_mm: null
     length_mm: null
@@ -42,7 +42,7 @@ parts:
     display_name: "렌치 볼트"
     ocr_aliases: ["렌치 볼트", "렌치볼트", "육각 렌치 볼트", "육각렌치볼트"]
     part_no: "B002"
-    tray_id: 2
+    tray_id: 5
     nominal_size: null
     diameter_mm: null
     length_mm: null
@@ -56,7 +56,7 @@ parts:
     display_name: "코너 브라켓"
     ocr_aliases: ["코너 브라켓", "코너브라켓"]
     part_no: "S001"
-    tray_id: 3
+    tray_id: 1
     width_mm: null
     height_mm: null
     thickness_mm: null
@@ -70,7 +70,7 @@ parts:
     display_name: "T 너트"
     ocr_aliases: ["T 너트", "T너트"]
     part_no: "W001"
-    tray_id: 5
+    tray_id: 3
     length_mm: null
     width_mm: null
     height_mm: null
@@ -84,7 +84,7 @@ parts:
     display_name: "L형 브라켓"
     ocr_aliases: ["L형 브라켓", "L형브라켓", "엘형 브라켓", "엘형브라켓"]
     part_no: "W002"
-    tray_id: 6
+    tray_id: 2
     leg_length_mm: null
     width_mm: null
     thickness_mm: null
