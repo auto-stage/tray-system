@@ -50,6 +50,8 @@ typedef enum
   STAGE_MODE_HOME_BACKOFF,
   STAGE_MODE_HOME_WAIT_SLOW,
   STAGE_MODE_HOME_SLOW,
+  STAGE_MODE_HOME_WAIT_FINAL_BACKOFF,
+  STAGE_MODE_HOME_FINAL_BACKOFF,
   STAGE_MODE_SOFT_STOP,
   STAGE_MODE_FAULT
 } StageMode;
@@ -110,6 +112,8 @@ typedef struct
   bool positive;
   bool enabled;
   bool homed;
+  volatile uint8_t min_limit_count;
+  volatile uint8_t max_limit_count;
 } StageAxis;
 
 /* USER CODE END PTD */
@@ -224,26 +228,36 @@ static bool HX711_2_CalValid = false;
 #define GRIP_OPEN_ANGLE_DEG                 30U
 #define GRIP_CLOSE_ANGLE_DEG                150U
 
-/* GRIPPER_STEPPER_PATCH_V1
- * Gripper rack stepper - initial integration test
- * STEP = PD14 / TIM4_CH3, DIR = PD15
+/* GRIPPER_STEPPER_FINAL_V1
+ * 검증 완료된 rack stepper 설정
+ * STEP = PD14 / TIM4_CH3 (D10), DIR = PD15 (D9)
+ * RETRACT limit = PE11 (D5), EXTEND limit = PE13 (D3)
+ * NC contact + internal pull-up: normal LOW, active/disconnected HIGH.
  *
- * ENA and MIN/MAX are intentionally not enabled in this first patch because
- * their real wiring/polarity and switches must be confirmed on hardware first.
- * The proven 1/8 microstep rack calculation is 1600 / 150.72 = 10.616 steps/mm.
- * Start with only 50 mm travel for a safe integration test; change the normal
- * EXTEND distance after the actual tray reach is measured.
+ * HOME: RETRACT limit -> 3 mm release -> slow re-touch -> 3 mm final release.
+ * The final released point is logical 0 mm.
+ * Normal motion uses absolute targets: RETRACT=0 mm, EXTEND=200 mm.
  */
 #define GRIPPER_STEP_CHANNEL                 TIM_CHANNEL_3
 #define GRIPPER_DIR_GPIO_PORT                GPIOD
 #define GRIPPER_DIR_GPIO_PIN                 GPIO_PIN_15
 #define GRIPPER_DIR_EXTEND_LEVEL             GPIO_PIN_SET
+#define GRIPPER_RETRACT_LIMIT_GPIO_PORT      GPIOE
+#define GRIPPER_RETRACT_LIMIT_GPIO_PIN       GPIO_PIN_11
+#define GRIPPER_EXTEND_LIMIT_GPIO_PORT       GPIOE
+#define GRIPPER_EXTEND_LIMIT_GPIO_PIN        GPIO_PIN_13
 #define GRIPPER_DEFAULT_STEPS_PER_MM         10.616f
-#define GRIPPER_TEST_TRAVEL_MM               50.0f
-#define GRIPPER_DEFAULT_SPEED_MM_S           60.0f
+#define GRIPPER_EXTEND_POSITION_MM           200.0f
+#define GRIPPER_RETRACT_POSITION_MM          0.0f
+#define GRIPPER_DEFAULT_STEP_HZ              800U
+#define GRIPPER_HOME_STEP_HZ                 400U
+#define GRIPPER_DEFAULT_SPEED_MM_S           ((float)GRIPPER_DEFAULT_STEP_HZ / GRIPPER_DEFAULT_STEPS_PER_MM)
 #define GRIPPER_DEFAULT_ACCEL_MM_S2          200.0f
+#define GRIPPER_HOME_ACCEL_STEPS_S2          1200.0f
+#define GRIPPER_HOME_BACKOFF_MM              3.0f
 #define GRIPPER_SOFT_MIN_MM                  0.0f
-#define GRIPPER_SOFT_MAX_MM                  300.0f
+#define GRIPPER_SOFT_MAX_MM                  GRIPPER_EXTEND_POSITION_MM
+#define GRIPPER_LIMIT_CONFIRM_PULSES         3U
 
 #define STAGE_CONTROL_PERIOD_MS            10U
 #define STAGE_RX_RING_SIZE                 512U
@@ -714,6 +728,50 @@ static bool Stage_MaxActive(const StageAxis *axis)
 #endif
 }
 
+static bool Stage_IsGripperAxis(const StageAxis *axis)
+{
+  return (axis == &stage_axis[STAGE_AXIS_G]);
+}
+
+/*
+ * G-axis limit debounce for timer ISR: require several consecutive timer
+ * periods at HIGH. This avoids HAL_Delay() inside an interrupt while rejecting
+ * the short spikes observed when the stepper driver switches. X/Z keep their
+ * existing immediate limit behavior.
+ */
+static bool Stage_DestinationLimitConfirmedIsr(StageAxis *axis)
+{
+  bool active;
+  volatile uint8_t *count;
+
+  if (axis == NULL)
+  {
+    return false;
+  }
+
+  if (!Stage_IsGripperAxis(axis))
+  {
+    return axis->positive ? Stage_MaxActive(axis) : Stage_MinActive(axis);
+  }
+
+  active = axis->positive ? Stage_MaxActive(axis) : Stage_MinActive(axis);
+  count = axis->positive ? &axis->max_limit_count : &axis->min_limit_count;
+
+  if (active)
+  {
+    if (*count < GRIPPER_LIMIT_CONFIRM_PULSES)
+    {
+      ++(*count);
+    }
+  }
+  else
+  {
+    *count = 0U;
+  }
+
+  return (*count >= GRIPPER_LIMIT_CONFIRM_PULSES);
+}
+
 static bool Stage_EStopInputActive(void)
 {
 #if STAGE_USE_ESTOP_INPUT
@@ -839,6 +897,8 @@ static StageResult Stage_StartMotion(StageAxis *axis, bool positive,
     return STAGE_ERR_SOFT_LIMIT;
   }
 
+  axis->min_limit_count = 0U;
+  axis->max_limit_count = 0U;
   Stage_SetDirection(axis, positive);
   HAL_Delay(1U); /* DIR setup 시간과 드라이버 입력 안정화 시간 */
 
@@ -931,10 +991,10 @@ static void Stage_Init(TIM_HandleTypeDef *htim_x, TIM_HandleTypeDef *htim_z,
     .ena_pin = 0U,
     .dir_positive_level = GRIPPER_DIR_EXTEND_LEVEL,
     .enabled_level = GPIO_PIN_SET,
-    .min_port = NULL,
-    .min_pin = 0U,
-    .max_port = NULL,
-    .max_pin = 0U,
+    .min_port = GRIPPER_RETRACT_LIMIT_GPIO_PORT,
+    .min_pin = GRIPPER_RETRACT_LIMIT_GPIO_PIN,
+    .max_port = GRIPPER_EXTEND_LIMIT_GPIO_PORT,
+    .max_pin = GRIPPER_EXTEND_LIMIT_GPIO_PIN,
     .mode = STAGE_MODE_IDLE,
     .steps_per_mm = GRIPPER_DEFAULT_STEPS_PER_MM,
     .soft_min_mm = GRIPPER_SOFT_MIN_MM,
@@ -1071,6 +1131,14 @@ static StageResult Stage_Home(StageAxisId id)
   {
     axis->mode = STAGE_MODE_HOME_WAIT_BACKOFF;
     return STAGE_OK;
+  }
+
+  if (id == STAGE_AXIS_G)
+  {
+    fast_hz = GRIPPER_HOME_STEP_HZ;
+    return Stage_StartMotion(axis, false, UINT64_MAX, fast_hz,
+                             GRIPPER_HOME_ACCEL_STEPS_S2,
+                             STAGE_MODE_HOME_FAST);
   }
 
   fast_hz = (uint32_t)lroundf(STAGE_HOME_FAST_MM_S * axis->steps_per_mm);
@@ -1239,8 +1307,7 @@ static void Stage_OnTimerPeriodElapsed(TIM_HandleTypeDef *htim)
     return;
   }
 
-  if ((!axis->positive && Stage_MinActive(axis)) ||
-      (axis->positive && Stage_MaxActive(axis)))
+  if (Stage_DestinationLimitConfirmedIsr(axis))
   {
     StageMode previous_mode = axis->mode;
 
@@ -1251,12 +1318,20 @@ static void Stage_OnTimerPeriodElapsed(TIM_HandleTypeDef *htim)
     }
     else if ((previous_mode == STAGE_MODE_HOME_SLOW) && !axis->positive)
     {
-      axis->position_steps = axis->soft_min_steps;
-      axis->homed = true;
-      axis->mode = STAGE_MODE_IDLE;
+      if (Stage_IsGripperAxis(axis))
+      {
+        axis->mode = STAGE_MODE_HOME_WAIT_FINAL_BACKOFF;
+      }
+      else
+      {
+        axis->position_steps = axis->soft_min_steps;
+        axis->homed = true;
+        axis->mode = STAGE_MODE_IDLE;
+      }
     }
     else
     {
+      axis->homed = false;
       axis->mode = STAGE_MODE_FAULT;
     }
     return;
@@ -1285,6 +1360,21 @@ static void Stage_OnTimerPeriodElapsed(TIM_HandleTypeDef *htim)
         Stage_TimerStopIsr(axis);
         axis->mode = STAGE_MODE_HOME_WAIT_SLOW;
       }
+      else if (axis->mode == STAGE_MODE_HOME_FINAL_BACKOFF)
+      {
+        Stage_TimerStopIsr(axis);
+        if (Stage_MinActive(axis))
+        {
+          axis->homed = false;
+          axis->mode = STAGE_MODE_FAULT;
+        }
+        else
+        {
+          axis->position_steps = 0;
+          axis->homed = true;
+          axis->mode = STAGE_MODE_IDLE;
+        }
+      }
       else
       {
         Stage_FinishAxisIsr(axis);
@@ -1302,23 +1392,58 @@ static void Stage_ProcessAxis10ms(StageAxis *axis)
   if (axis->mode == STAGE_MODE_HOME_WAIT_BACKOFF)
   {
     axis->mode = STAGE_MODE_IDLE;
-    (void)Stage_StartMotion(
-      axis, true,
-      (uint64_t)llroundf(STAGE_HOME_BACKOFF_MM * axis->steps_per_mm),
-      (uint32_t)lroundf(STAGE_HOME_SLOW_MM_S * axis->steps_per_mm),
-      STAGE_HOME_ACCEL_MM_S2 * axis->steps_per_mm,
-      STAGE_MODE_HOME_BACKOFF);
+    if (Stage_IsGripperAxis(axis))
+    {
+      (void)Stage_StartMotion(
+        axis, true,
+        (uint64_t)llroundf(GRIPPER_HOME_BACKOFF_MM * axis->steps_per_mm),
+        GRIPPER_HOME_STEP_HZ,
+        GRIPPER_HOME_ACCEL_STEPS_S2,
+        STAGE_MODE_HOME_BACKOFF);
+    }
+    else
+    {
+      (void)Stage_StartMotion(
+        axis, true,
+        (uint64_t)llroundf(STAGE_HOME_BACKOFF_MM * axis->steps_per_mm),
+        (uint32_t)lroundf(STAGE_HOME_SLOW_MM_S * axis->steps_per_mm),
+        STAGE_HOME_ACCEL_MM_S2 * axis->steps_per_mm,
+        STAGE_MODE_HOME_BACKOFF);
+    }
     return;
   }
 
   if (axis->mode == STAGE_MODE_HOME_WAIT_SLOW)
   {
     axis->mode = STAGE_MODE_IDLE;
+    if (Stage_IsGripperAxis(axis))
+    {
+      (void)Stage_StartMotion(
+        axis, false, UINT64_MAX,
+        GRIPPER_HOME_STEP_HZ / 2U,
+        GRIPPER_HOME_ACCEL_STEPS_S2,
+        STAGE_MODE_HOME_SLOW);
+    }
+    else
+    {
+      (void)Stage_StartMotion(
+        axis, false, UINT64_MAX,
+        (uint32_t)lroundf(STAGE_HOME_SLOW_MM_S * axis->steps_per_mm),
+        STAGE_HOME_ACCEL_MM_S2 * axis->steps_per_mm,
+        STAGE_MODE_HOME_SLOW);
+    }
+    return;
+  }
+
+  if (axis->mode == STAGE_MODE_HOME_WAIT_FINAL_BACKOFF)
+  {
+    axis->mode = STAGE_MODE_IDLE;
     (void)Stage_StartMotion(
-      axis, false, UINT64_MAX,
-      (uint32_t)lroundf(STAGE_HOME_SLOW_MM_S * axis->steps_per_mm),
-      STAGE_HOME_ACCEL_MM_S2 * axis->steps_per_mm,
-      STAGE_MODE_HOME_SLOW);
+      axis, true,
+      (uint64_t)llroundf(GRIPPER_HOME_BACKOFF_MM * axis->steps_per_mm),
+      GRIPPER_HOME_STEP_HZ,
+      GRIPPER_HOME_ACCEL_STEPS_S2,
+      STAGE_MODE_HOME_FINAL_BACKOFF);
     return;
   }
 
@@ -1361,7 +1486,8 @@ static void Stage_ProcessAxis10ms(StageAxis *axis)
        * 감속 과정에서 조기 IDLE로 종료되면
        * HOME_WAIT_SLOW -> HOME_SLOW 재접근이 수행되지 않는다.
        */
-      if (axis->mode == STAGE_MODE_HOME_BACKOFF)
+      if ((axis->mode == STAGE_MODE_HOME_BACKOFF) ||
+          (axis->mode == STAGE_MODE_HOME_FINAL_BACKOFF))
       {
         if (axis->current_hz != axis->start_hz)
         {
@@ -1446,7 +1572,8 @@ static const char *Stage_ModeName(StageMode mode)
   static const char *const names[] =
   {
     "IDLE", "MOVE", "JOG", "HOME_FAST", "HOME_WAIT_BACKOFF",
-    "HOME_BACKOFF", "HOME_WAIT_SLOW", "HOME_SLOW", "SOFT_STOP", "FAULT"
+    "HOME_BACKOFF", "HOME_WAIT_SLOW", "HOME_SLOW",
+    "HOME_WAIT_FINAL_BACKOFF", "HOME_FINAL_BACKOFF", "SOFT_STOP", "FAULT"
   };
 
   return (mode <= STAGE_MODE_FAULT) ? names[mode] : "UNKNOWN";
@@ -1578,9 +1705,11 @@ static void StageProtocol_SendGripperStatus(void)
   StageProtocol_FormatMm(g.position_mm, position, sizeof(position));
 
   (void)snprintf(output, sizeof(output),
-                 "GRIPPER STATUS %s POS_MM %s STEPS %ld HZ %lu ENABLED %u\r\n",
+                 "GRIPPER STATUS %s POS_MM %s STEPS %ld HZ %lu ENABLED %u HOMED %u RETRACT_LIMIT %u EXTEND_LIMIT %u\r\n",
                  Stage_ModeName(g.mode), position, (long)g.position_steps,
-                 (unsigned long)g.current_hz, g.enabled ? 1U : 0U);
+                 (unsigned long)g.current_hz, g.enabled ? 1U : 0U,
+                 g.homed ? 1U : 0U, g.min_limit ? 1U : 0U,
+                 g.max_limit ? 1U : 0U);
   StageProtocol_SendText(output);
 }
 
@@ -1932,7 +2061,8 @@ static void StageProtocol_HandleLine(char *line)
   {
     char *action = StageProtocol_NextToken(&save);
     StageResult g_result;
-    char output[64];
+    StageAxis *g_axis = &stage_axis[STAGE_AXIS_G];
+    char output[96];
 
     if (action == NULL)
     {
@@ -1963,14 +2093,15 @@ static void StageProtocol_HandleLine(char *line)
       return;
     }
 
-    if ((strcmp(action, "EXTEND") != 0) &&
+    if ((strcmp(action, "HOME") != 0) &&
+        (strcmp(action, "EXTEND") != 0) &&
         (strcmp(action, "RETRACT") != 0))
     {
       StageProtocol_SendText("ERR GRIPPER BAD_PARAM\r\n");
       return;
     }
 
-    if (!stage_axis[STAGE_AXIS_G].enabled)
+    if (!g_axis->enabled)
     {
       g_result = Stage_Enable(STAGE_AXIS_G, true);
       if (g_result != STAGE_OK)
@@ -1982,12 +2113,56 @@ static void StageProtocol_HandleLine(char *line)
       }
     }
 
-    g_result = Stage_MoveMm(
-        STAGE_AXIS_G,
-        (strcmp(action, "EXTEND") == 0) ? GRIPPER_TEST_TRAVEL_MM
-                                         : -GRIPPER_TEST_TRAVEL_MM,
-        GRIPPER_DEFAULT_SPEED_MM_S,
-        GRIPPER_DEFAULT_ACCEL_MM_S2);
+    if (strcmp(action, "HOME") == 0)
+    {
+      /* Unexpected limit fault invalidates position. HOME is the recovery path. */
+      if ((g_axis->mode == STAGE_MODE_FAULT) && !stage_estop_latched)
+      {
+        Stage_TimerStop(g_axis);
+        g_axis->mode = STAGE_MODE_IDLE;
+        g_axis->homed = false;
+      }
+
+      g_result = Stage_Home(STAGE_AXIS_G);
+      if (g_result == STAGE_OK)
+      {
+        StageProtocol_SendText("OK GRIPPER HOME\r\n");
+      }
+      else
+      {
+        (void)snprintf(output, sizeof(output), "ERR GRIPPER %s\r\n",
+                       Stage_ResultName(g_result));
+        StageProtocol_SendText(output);
+      }
+      return;
+    }
+
+    if (!g_axis->homed)
+    {
+      StageProtocol_SendText("ERR GRIPPER NOT_HOMED\r\n");
+      return;
+    }
+
+    {
+      float target_mm = (strcmp(action, "EXTEND") == 0)
+                          ? GRIPPER_EXTEND_POSITION_MM
+                          : GRIPPER_RETRACT_POSITION_MM;
+      float current_mm = (float)g_axis->position_steps / g_axis->steps_per_mm;
+      float delta_mm = target_mm - current_mm;
+
+      if (fabsf(delta_mm) < 0.05f)
+      {
+        (void)snprintf(output, sizeof(output), "OK GRIPPER %s\r\n", action);
+        StageProtocol_SendText(output);
+        return;
+      }
+
+      g_result = Stage_MoveMm(
+          STAGE_AXIS_G,
+          delta_mm,
+          GRIPPER_DEFAULT_SPEED_MM_S,
+          GRIPPER_DEFAULT_ACCEL_MM_S2);
+    }
 
     if (g_result == STAGE_OK)
     {
@@ -2587,6 +2762,14 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(HX711_2_SCK_GPIO_PORT, &GPIO_InitStruct);
 
 #if STAGE_USE_LIMIT_INPUTS
+  /* Gripper NC limits: normal LOW, active/disconnected HIGH */
+  __HAL_RCC_GPIOE_CLK_ENABLE();
+  GPIO_InitStruct.Pin = GRIPPER_RETRACT_LIMIT_GPIO_PIN |
+                        GRIPPER_EXTEND_LIMIT_GPIO_PIN;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
+
   /* NC 리미트 4개: 정상 LOW, 작동/단선 HIGH */
   GPIO_InitStruct.Pin = GPIO_PIN_12|GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
