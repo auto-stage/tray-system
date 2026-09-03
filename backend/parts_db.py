@@ -32,6 +32,7 @@ def load_parts_catalog(
     catalog: dict[str, dict[str, Any]] = {}
     seen_part_numbers: set[str] = set()
     seen_yolo_ids: set[int] = set()
+    seen_tray_ids: set[int] = set()
     for raw_key, raw_config in parts.items():
         class_key = str(raw_key).strip()
         if not class_key:
@@ -52,6 +53,19 @@ def load_parts_catalog(
             if part_no in seen_part_numbers:
                 raise ValueError(f"중복 part_no: {part_no}")
             seen_part_numbers.add(part_no)
+        try:
+            tray_id = int(config["tray_id"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError(
+                f"{class_key}.tray_id는 1~6 정수여야 합니다."
+            ) from error
+        if tray_id not in range(1, 7):
+            raise ValueError(
+                f"{class_key}.tray_id는 1~6 범위여야 합니다: {tray_id}"
+            )
+        if tray_id in seen_tray_ids:
+            raise ValueError(f"중복 tray_id: {tray_id}")
+        seen_tray_ids.add(tray_id)
         aliases = [
             str(value).strip()
             for value in config.get("ocr_aliases", [])
@@ -66,6 +80,7 @@ def load_parts_catalog(
                 "part_no": part_no,
                 "ocr_aliases": aliases,
                 "yolo_class_id": yolo_class_id,
+                "tray_id": tray_id,
             }
         )
         catalog[class_key] = config

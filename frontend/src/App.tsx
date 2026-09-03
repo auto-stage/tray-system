@@ -7791,7 +7791,7 @@ export default function App() {
 
 
   // ============================================================
-  // Python inventory.json → React UI 재고 동기화
+  // Backend parts.yaml + inventory.json → React UI Tray/재고 동기화
   // ============================================================
   useEffect(() => {
     const loadInventory = async () => {
@@ -7841,6 +7841,9 @@ export default function App() {
 
             return {
               ...tray,
+              partNo: String(matchedEntry.part_no ?? tray.partNo),
+              name: String(matchedEntry.name ?? tray.name),
+              spec: String(matchedEntry.spec ?? tray.spec),
               stock,
               maxStock,
               status,
