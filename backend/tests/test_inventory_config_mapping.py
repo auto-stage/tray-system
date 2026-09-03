@@ -37,12 +37,14 @@ def test_parts_yaml_is_authoritative_for_tray_mapping(monkeypatch, tmp_path):
                     "name": "OLD T BOLT",
                     "spec": "OLD",
                     "stock": 24,
+                    "max_stock": 40,
                 },
                 "N001": {
                     "tray": 4,
                     "name": "OLD FLANGE",
                     "spec": "OLD",
                     "stock": 20,
+                    "max_stock": 50,
                 },
             },
             ensure_ascii=False,
@@ -60,3 +62,43 @@ def test_parts_yaml_is_authoritative_for_tray_mapping(monkeypatch, tmp_path):
     assert result["B001"]["part_no"] == "B001"
     assert result["N001"]["tray"] == t_bolt_tray
     assert result["N001"]["name"] == "플랜지 너트"
+
+
+def test_inventory_uses_per_part_max_stock(monkeypatch, tmp_path):
+    inventory_path = tmp_path / "inventory.json"
+    inventory_path.write_text(
+        json.dumps(
+            {
+                "B001": {
+                    "stock": 20,
+                    "max_stock": 40,
+                },
+                "N001": {
+                    "stock": 5,
+                    "max_stock": 50,
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        inventory_service,
+        "INVENTORY_PATH",
+        inventory_path,
+    )
+
+    result = inventory_service.get_all_inventory()
+
+    assert result["B001"]["stock"] == 20
+    assert result["B001"]["max_stock"] == 40
+    assert result["B001"]["percent"] == 50
+    assert result["B001"]["low_stock_threshold"] == 8
+    assert result["B001"]["status"] == "READY"
+
+    assert result["N001"]["stock"] == 5
+    assert result["N001"]["max_stock"] == 50
+    assert result["N001"]["percent"] == 10
+    assert result["N001"]["low_stock_threshold"] == 10
+    assert result["N001"]["status"] == "LOW STOCK"

@@ -18,21 +18,13 @@ def test_manual_picking_can_skip_middle_inspection():
     assert workflow.next_item()["state"] == "FINAL_VERIFICATION"
 
 
-def test_temporary_weights_are_configured_for_all_parts():
+def test_weights_are_configured_for_all_parts():
     catalog = load_parts_catalog(backend_dir / "config" / "parts.yaml")
-    expected = {
-        "flange_nut": 10.0,
-        "t_bolt": 20.0,
-        "socket_head_bolt": 30.0,
-        "corner_bracket": 40.0,
-        "t_nut": 50.0,
-        "l_bracket": 60.0,
-    }
-    assert {
-        key: float(value["weight_g"])
-        for key, value in catalog.items()
-    } == expected
 
+    for class_key, config in catalog.items():
+        weight_g = config.get("weight_g")
+        assert weight_g is not None, f"{class_key}.weight_g가 등록되어야 합니다."
+        assert float(weight_g) > 0.0, f"{class_key}.weight_g는 0보다 커야 합니다."
 
 def test_mock_final_weight_uses_expected_total(monkeypatch):
     import server as backend_server
@@ -66,8 +58,11 @@ def test_mock_final_weight_uses_expected_total(monkeypatch):
     result = backend_server.final_verification_check(request)
     assert result["success"] is True
     assert result["passed"] is True
-    assert result["expected_weight_g"] == 90.0
-    assert result["measured_weight_g"] == 90.0
+    assert result["expected_weight_g"] == (
+        float(backend_server.parts_catalog["t_bolt"]["weight_g"]) * 2
+        + float(backend_server.parts_catalog["t_nut"]["weight_g"])
+    )
+    assert result["measured_weight_g"] == result["expected_weight_g"]
 
 
 def test_mock_final_weight_offset_can_force_fail(monkeypatch):
