@@ -2,49 +2,49 @@
   "version": 1,
   "coordinate_reference": "CARRIAGE_CENTER",
   "description": "X/Z coordinates taught after homing. Later gripper TCP offset can be added without changing the STM32 protocol.",
-  "updated_at": "2026-08-28T17:59:55",
+  "updated_at": "2026-09-04T07:18:05",
   "slots": {
     "XC1ZR1": {
-      "x_mm": 322.7563,
-      "z_mm": 416.8813,
-      "note": "",
+      "x_mm": 639.6032,
+      "z_mm": 387.7844,
+      "note": "상단 좌",
       "reference": "CARRIAGE_CENTER",
-      "updated_at": "2026-08-28T17:59:48"
+      "updated_at": "2026-09-04T07:18:05"
     },
     "XC1ZR2": {
-      "x_mm": 322.7563,
-      "z_mm": 210.1719,
-      "note": "",
+      "x_mm": 639.6032,
+      "z_mm": 208.0313,
+      "note": "중단 좌",
       "reference": "CARRIAGE_CENTER",
-      "updated_at": "2026-08-28T17:57:59"
+      "updated_at": "2026-09-04T07:16:36"
     },
     "XC1ZR3": {
-      "x_mm": 322.7781,
-      "z_mm": 0.7906,
-      "note": "",
+      "x_mm": 639.6032,
+      "z_mm": 26.2281,
+      "note": "하단 좌",
       "reference": "CARRIAGE_CENTER",
-      "updated_at": "2026-08-28T17:40:37"
+      "updated_at": "2026-09-04T07:15:32"
     },
     "XC2ZR1": {
-      "x_mm": 664.7531,
-      "z_mm": 416.2781,
-      "note": "",
+      "x_mm": 332.9344,
+      "z_mm": 384.35,
+      "note": "상단 우",
       "reference": "CARRIAGE_CENTER",
-      "updated_at": "2026-08-28T17:50:07"
+      "updated_at": "2026-09-04T07:13:01"
     },
     "XC2ZR2": {
-      "x_mm": 657.0219,
-      "z_mm": 206.2625,
-      "note": "",
+      "x_mm": 332.9344,
+      "z_mm": 203.0188,
+      "note": "중단 우",
       "reference": "CARRIAGE_CENTER",
-      "updated_at": "2026-08-28T17:45:52"
+      "updated_at": "2026-09-04T07:12:06"
     },
     "XC2ZR3": {
-      "x_mm": 657.0219,
-      "z_mm": 0.7906,
-      "note": "",
+      "x_mm": 332.9344,
+      "z_mm": 23.5438,
+      "note": "하단 우",
       "reference": "CARRIAGE_CENTER",
-      "updated_at": "2026-08-28T17:43:23"
+      "updated_at": "2026-09-04T07:14:18"
     }
   }
 }
