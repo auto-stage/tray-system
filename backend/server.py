@@ -604,6 +604,19 @@ else:
     )
 
 
+GRIPPER_SERVO_BYPASS = (
+    os.getenv("GRIPPER_SERVO_BYPASS", "0")
+    .strip()
+    .lower()
+    in {"1", "true", "yes", "on"}
+)
+
+print(
+    "[MATERIAL FLOW] "
+    f"gripper_servo_bypass={'ON' if GRIPPER_SERVO_BYPASS else 'OFF'}"
+)
+
+
 # ============================================================
 # Material Flow 장치 구성
 #
@@ -639,6 +652,7 @@ if (
         gripper=gripper,
         loadcell=loadcell,
         gripper_stepper=gripper_stepper,
+        gripper_servo_bypass=GRIPPER_SERVO_BYPASS,
         # 실제 Stage에서는 ArUco 정렬을 BYPASS하지 않는다.
         # 함수 정의는 파일 뒤쪽에 있지만 callback은 실행 시점에 조회된다.
         alignment_callback=(
@@ -672,6 +686,7 @@ elif (
         gripper=gripper,
         loadcell=loadcell,
         gripper_stepper=gripper_stepper,
+        gripper_servo_bypass=GRIPPER_SERVO_BYPASS,
         # Mock 장치 시험은 기존 BYPASS를 유지하되, 실제 ArUco 카메라를
         # 선택한 경우에는 동일한 정렬 callback으로 통합 시퀀스를 검증한다.
         alignment_callback=(

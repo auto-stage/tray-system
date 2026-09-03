@@ -31,6 +31,7 @@ class MaterialFlowExecutor:
         loadcell_samples: int = 5,
         grip_settle_sec: float = 0.5,
         stepper_settle_sec: float = 0.3,
+        gripper_servo_bypass: bool = False,
     ) -> None:
 
         self.material_flow = material_flow
@@ -38,6 +39,7 @@ class MaterialFlowExecutor:
         self.gripper = gripper
         self.loadcell = loadcell
         self.gripper_stepper = gripper_stepper
+        self.gripper_servo_bypass = bool(gripper_servo_bypass)
 
         self.alignment_callback = alignment_callback
 
@@ -222,6 +224,54 @@ class MaterialFlowExecutor:
 
         return result
 
+    def _grip_close(self) -> dict[str, Any]:
+        """
+        Servo CLOSE.
+
+        GRIPPER_SERVO_BYPASS=1 시험에서는
+        G축은 그대로 동작시키고 Servo 명령만 생략한다.
+        """
+
+        if self._stop_requested():
+            return {
+                "success": False,
+                "cancelled": True,
+                "message": "STOP 상태이므로 GRIP CLOSE를 실행하지 않습니다.",
+            }
+
+        if self.gripper_servo_bypass:
+            return {
+                "success": True,
+                "bypass": True,
+                "message": "Gripper Servo CLOSE BYPASS",
+            }
+
+        return self.gripper.close()
+
+    def _grip_open(self) -> dict[str, Any]:
+        """
+        Servo OPEN.
+
+        GRIPPER_SERVO_BYPASS=1 시험에서는
+        G축은 그대로 동작시키고 Servo 명령만 생략한다.
+        """
+
+        if self._stop_requested():
+            return {
+                "success": False,
+                "cancelled": True,
+                "message": "STOP 상태이므로 GRIP OPEN을 실행하지 않습니다.",
+            }
+
+        if self.gripper_servo_bypass:
+            return {
+                "success": True,
+                "bypass": True,
+                "message": "Gripper Servo OPEN BYPASS",
+            }
+
+        return self.gripper.open()
+
     def _align(
         self,
         tray_id: int,
@@ -271,7 +321,7 @@ class MaterialFlowExecutor:
                 history,
             )
 
-        result = self.gripper.open()
+        result = self._grip_open()
         history.append({
             "step": "PICK_RETRY_OPEN",
             "result": result,
@@ -347,7 +397,7 @@ class MaterialFlowExecutor:
                 history,
             )
 
-        result = self.gripper.close()
+        result = self._grip_close()
         history.append({
             "step": "PICK_RETRY_CLOSE",
             "result": result,
@@ -438,7 +488,7 @@ class MaterialFlowExecutor:
                 history,
             )
 
-        result = self.gripper.open()
+        result = self._grip_open()
 
         history.append({
             "step": "RETURN_PICK_RETRY_OPEN",
@@ -491,7 +541,7 @@ class MaterialFlowExecutor:
                 history,
             )
 
-        result = self.gripper.close()
+        result = self._grip_close()
 
         history.append({
             "step": "RETURN_PICK_RETRY_CLOSE",
@@ -751,7 +801,7 @@ class MaterialFlowExecutor:
                 history,
             )
 
-        result = self.gripper.close()
+        result = self._grip_close()
 
         history.append({
             "step": "GRIP_CLOSE",
@@ -970,7 +1020,7 @@ class MaterialFlowExecutor:
                 history,
             )
 
-        result = self.gripper.open()
+        result = self._grip_open()
 
         history.append({
             "step": "GRIP_OPEN",
@@ -1200,7 +1250,7 @@ class MaterialFlowExecutor:
                 history,
             )
 
-        result = self.gripper.close()
+        result = self._grip_close()
 
         history.append({
             "step": "RETURN_GRIP_CLOSE",
@@ -1337,7 +1387,7 @@ class MaterialFlowExecutor:
                 history,
             )
 
-        result = self.gripper.open()
+        result = self._grip_open()
 
         history.append({
             "step": "RETURN_GRIP_OPEN",
