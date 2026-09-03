@@ -1034,13 +1034,15 @@ def normalize_part_no(text):
 
 def normalize_name(text):
 
-    return ''.join(
+    if not text:
+        return ""
 
+    return ''.join(
         re.findall(
-            r'[가-힣]+',
+            r'[가-힣A-Za-z0-9]+',
             text
         )
-    )
+    ).upper()
 
 
 # ============================================================
@@ -1104,36 +1106,20 @@ def calculate_candidate(
 
     scores = {}
 
-
-    ocr_code = normalize_part_no(
-        row_data["part_no"]
-    )
-
+    # 작업지시서에서는 "품명"만 부품 판정에 사용한다.
+    # 품번/규격은 OCR이 잘못 읽었을 때 오히려 품명 매칭을
+    # 방해할 수 있으므로 후보 선택 점수에는 사용하지 않는다.
 
     ocr_name = normalize_name(
         row_data["name"]
     )
 
 
-    ocr_spec = normalize_spec(
-        row_data["spec"]
-    )
-
-
     # -----------------------------
     # 품번
     # -----------------------------
-
-    if ocr_code:
-
-        scores["part_no"] = fuzz.ratio(
-            ocr_code,
-            code
-        )
-
-    else:
-
-        scores["part_no"] = None
+    # 기존 출력 구조와 호환성을 위해 키는 유지
+    scores["part_no"] = None
 
 
     # -----------------------------
@@ -1146,9 +1132,20 @@ def calculate_candidate(
             db_part["name"],
             *db_part.get("aliases", []),
         ]
-        scores["name"] = max(
-            fuzz.ratio(ocr_name, name)
+
+        normalized_names = [
+            normalize_name(name)
             for name in names
+            if name
+        ]
+
+        scores["name"] = max(
+            fuzz.ratio(
+                ocr_name,
+                candidate_name
+            )
+            for candidate_name in normalized_names
+            if candidate_name
         )
 
     else:
@@ -1159,68 +1156,18 @@ def calculate_candidate(
     # -----------------------------
     # 규격
     # -----------------------------
-
-    if (
-        db_part["spec"]
-        and
-        ocr_spec
-    ):
-
-        scores["spec"] = fuzz.ratio(
-
-            ocr_spec,
-
-            normalize_spec(
-                db_part["spec"]
-            )
-        )
-
-    else:
-
-        scores["spec"] = None
+    # 기존 출력 구조와 호환성을 위해 키는 유지
+    scores["spec"] = None
 
 
-    # 각 항목의 중요도
-    weights = {
-
-        "part_no": 0.50,
-
-        "name": 0.30,
-
-        "spec": 0.20
-    }
-
-
-    numerator = 0
-    denominator = 0
-
-
-    for key, score in scores.items():
-
-        if score is not None:
-
-            numerator += (
-                score
-                *
-                weights[key]
-            )
-
-            denominator += (
-                weights[key]
-            )
-
-
-    if denominator == 0:
+    # 부품 선택 점수 = 품명 점수
+    if scores["name"] is None:
 
         total = 0
 
     else:
 
-        total = (
-            numerator
-            /
-            denominator
-        )
+        total = scores["name"]
 
 
     return {
@@ -1233,8 +1180,6 @@ def calculate_candidate(
 
         "total": total
     }
-
-
 # ============================================================
 # 21. 한 행의 부품 결정
 # ============================================================
@@ -1322,10 +1267,6 @@ def match_part(
         and
 
         margin >= 8
-
-        and
-
-        strong_count >= 2
 
         and
 
@@ -1590,9 +1531,7 @@ headers = find_headers(
 required_headers = [
 
     "no",
-    "part_no",
     "name",
-    "spec",
     "quantity"
 ]
 
