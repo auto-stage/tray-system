@@ -87,9 +87,25 @@ class STM32GripperStepperAdapter:
             )
 
             if not result.get("success"):
+                message = str(
+                    result.get(
+                        "message",
+                        "GRIPPER STATUS 확인 실패",
+                    )
+                )
+
+                # 이동 중 일시적으로 STATUS 응답이 늦어질 수 있다.
+                # 단일 1초 timeout으로 전체 이동을 실패시키지 않고,
+                # _wait_until_idle()의 전체 timeout 동안 재시도한다.
+                if message.startswith("TIMEOUT: GRIPPER STATUS"):
+                    last_message = message
+                    time.sleep(0.05)
+                    continue
+
+                # 명시적인 STM32 ERR 또는 Serial 오류는 즉시 실패 처리.
                 return {
                     "success": False,
-                    "message": result.get("message", "GRIPPER STATUS 확인 실패"),
+                    "message": message,
                     "received": result.get("received", []),
                 }
 

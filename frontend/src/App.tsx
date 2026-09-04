@@ -2121,21 +2121,41 @@ function TrayMovingScreen({
               <div style={{ position: 'absolute', top: 8, left: 8, color: 'white', fontSize: 10, fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>
                 CAM-01 LIVE
               </div>
-              <span className="status-dot blink" style={{ background: '#ef4444', position: 'absolute', top: 10, right: 8 }} />
-              {/* ArUco marker simulation */}
-              <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                {arucoMatch ? (
-                  <div style={{ position: 'relative' }}>
-                    <div style={{ width: 80, height: 80, background: 'white', border: '3px solid #22c55e', display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 3, padding: 6 }}>
-                      {[1,0,1,0,1,0,1,0,1].map((v,i) => <div key={i} style={{ background: v ? '#111' : 'white' }} />)}
-                    </div>
-                    <div style={{ position: 'absolute', inset: -8, border: '2px solid #22c55e', opacity: 0.7 }} />
-                  </div>
-                ) : (
-                  <div style={{ width: 80, height: 80, border: '2px dashed rgba(255,255,255,0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    <span className="blink" style={{ color: 'rgba(255,255,255,0.5)', fontSize: 10, fontFamily: 'JetBrains Mono, monospace' }}>SEARCHING</span>
-                  </div>
-                )}
+              <img
+                src="http://127.0.0.1:8000/vision/stream?annotate=true"
+                alt="ArUco live camera"
+                style={{
+                  position: 'absolute',
+                  inset: 0,
+                  width: '100%',
+                  height: '100%',
+                  objectFit: 'contain',
+                  display: 'block',
+                }}
+              />
+              <span
+                className="status-dot blink"
+                style={{
+                  background: '#22c55e',
+                  position: 'absolute',
+                  top: 10,
+                  right: 8,
+                }}
+              />
+              <div
+                style={{
+                  position: 'absolute',
+                  bottom: 8,
+                  right: 8,
+                  padding: '3px 8px',
+                  background: 'rgba(10,15,26,0.8)',
+                  color: arucoMatch ? '#22c55e' : '#93c5fd',
+                  fontSize: 10,
+                  fontFamily: 'JetBrains Mono, monospace',
+                  fontWeight: 700,
+                }}
+              >
+                {arucoMatch ? 'ARUCO MATCH' : 'SEARCHING'}
               </div>
             </div>
 

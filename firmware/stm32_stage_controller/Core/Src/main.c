@@ -176,7 +176,7 @@ typedef struct
 #define STAGE_X_DEFAULT_MAX_MM             1000.0f
 #define STAGE_Z_DEFAULT_MIN_MM             0.0f
 #define STAGE_Z_DEFAULT_MAX_MM             700.0f
-#define STAGE_HOME_FAST_MM_S               5.0f
+#define STAGE_HOME_FAST_MM_S               10.0f
 #define STAGE_HOME_SLOW_MM_S               1.0f
 #define STAGE_HOME_ACCEL_MM_S2             20.0f
 #define STAGE_HOME_BACKOFF_MM              3.0f
