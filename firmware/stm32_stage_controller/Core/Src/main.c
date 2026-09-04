@@ -195,11 +195,15 @@ typedef struct
 #define HX711_1_COUNT_PER_G                 668.7673f
 
 /* HX711 #2 (최종 검수 박스 로드셀)
- * DOUT/DT = PG3 (input), SCK/CLK = PG4 (output)
+ * DOUT/DT = PG3 (input), SCK/CLK = PF7 (output)
  * Channel A, Gain 128 사용
  *
- * TARE와 calibration 값은 현재 runtime에서 설정한다.
- * STM32 재부팅 후에는 다시 TARE/CAL이 필요하다.
+ * 실측 calibration:
+ * TARE_RAW    = -27473.2
+ * COUNT_PER_G = 732.9046
+ *
+ * 부팅 시 아래 실측값을 기본값으로 사용한다.
+ * FINAL_LOAD TARE / CAL 명령으로 runtime 재보정도 가능하다.
  */
 #define HX711_2_DOUT_GPIO_PORT              GPIOG
 #define HX711_2_DOUT_GPIO_PIN               GPIO_PIN_3
@@ -208,11 +212,13 @@ typedef struct
 #define HX711_2_READY_TIMEOUT_MS            200U
 #define HX711_2_DEFAULT_SAMPLES             10U
 
-static float HX711_2_TareRaw = 0.0f;
-static float HX711_2_CountPerG = 0.0f;
-static bool HX711_2_TareValid = false;
-static bool HX711_2_CalValid = false;
+#define HX711_2_TARE_RAW_DEFAULT            -27473.2f
+#define HX711_2_COUNT_PER_G_DEFAULT         732.9046f
 
+static float HX711_2_TareRaw = HX711_2_TARE_RAW_DEFAULT;
+static float HX711_2_CountPerG = HX711_2_COUNT_PER_G_DEFAULT;
+static bool HX711_2_TareValid = true;
+static bool HX711_2_CalValid = true;
 
 /* MG996R gripper servo - PA0 / TIM2_CH1 */
 #define SERVO_GPIO_PORT                     GPIOA
