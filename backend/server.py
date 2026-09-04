@@ -82,6 +82,7 @@ DATA_DIR.mkdir(exist_ok=True)
 RACK_LAYOUT_PATH = DATA_DIR / "rack_layout.json"
 PARTS_CONFIG_PATH = BASE_DIR / "config" / "parts.yaml"
 CAMERAS_CONFIG_PATH = BASE_DIR / "config" / "cameras.yaml"
+GRIPPER_CONFIG_PATH = BASE_DIR / "config" / "gripper.yaml"
 PART_CLASSIFIER_PROFILE_PATH = DATA_DIR / "part_classifier_profile.json"
 PART_CAPTURE_ROOT = BASE_DIR.parent / "captures" / "part_inspection"
 
@@ -95,7 +96,17 @@ def load_camera_role_config() -> dict:
     return cameras if isinstance(cameras, dict) else {}
 
 
+def load_gripper_config() -> dict:
+    if not GRIPPER_CONFIG_PATH.is_file():
+        return {}
+    with GRIPPER_CONFIG_PATH.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle) or {}
+    return raw if isinstance(raw, dict) else {}
+
+
 CAMERA_ROLE_CONFIG = load_camera_role_config()
+GRIPPER_CONFIG = load_gripper_config()
+GRIPPER_SERVO_CONFIG = dict(GRIPPER_CONFIG.get("servo", {}) or {})
 ARUCO_ROLE_CONFIG = dict(CAMERA_ROLE_CONFIG.get("aruco", {}) or {})
 WORK_ORDER_ROLE_CONFIG = dict(CAMERA_ROLE_CONFIG.get("work_order", {}) or {})
 WORK_ORDER_OCR_CONFIG = dict(WORK_ORDER_ROLE_CONFIG.get("ocr", {}) or {})
@@ -648,6 +659,29 @@ GRIPPER_SERVO_BYPASS = (
     in {"1", "true", "yes", "on"}
 )
 
+GRIPPER_OPEN_ANGLE_DEG = int(
+    GRIPPER_SERVO_CONFIG.get(
+        "open_angle_deg",
+        30,
+    )
+)
+
+GRIPPER_CLOSE_ANGLE_DEG = int(
+    GRIPPER_SERVO_CONFIG.get(
+        "close_angle_deg",
+        150,
+    )
+)
+
+for _name, _angle in (
+    ("GRIPPER_OPEN_ANGLE_DEG", GRIPPER_OPEN_ANGLE_DEG),
+    ("GRIPPER_CLOSE_ANGLE_DEG", GRIPPER_CLOSE_ANGLE_DEG),
+):
+    if not 0 <= _angle <= 180:
+        raise RuntimeError(
+            f"{_name}은 0~180 범위여야 합니다: {_angle}"
+        )
+
 RELEASE_MONITOR_TIMEOUT_S = max(
     float(
         os.getenv(
@@ -700,6 +734,8 @@ RETURN_SLOT_Z_OFFSET_MM = float(
 print(
     "[MATERIAL FLOW] "
     f"gripper_servo_bypass={'ON' if GRIPPER_SERVO_BYPASS else 'OFF'} "
+    f"servo_open={GRIPPER_OPEN_ANGLE_DEG}deg "
+    f"servo_close={GRIPPER_CLOSE_ANGLE_DEG}deg "
     f"release_monitor={RELEASE_MONITOR_TIMEOUT_S:.1f}s/"
     f"{RELEASE_MONITOR_POLL_S:.2f}s "
     f"confirm={RELEASE_CONFIRM_COUNT} "
@@ -731,6 +767,8 @@ if (
     # 하나의 실제 STM32 Serial transport를 공유한다.
     gripper = STM32GripperAdapter(
         stage=stage,
+        open_angle_deg=GRIPPER_OPEN_ANGLE_DEG,
+        close_angle_deg=GRIPPER_CLOSE_ANGLE_DEG,
     )
     gripper_stepper = STM32GripperStepperAdapter(
         stage=stage,
@@ -769,6 +807,8 @@ elif (
 
     gripper = MockGripperAdapter(
         loadcell=loadcell,
+        open_angle_deg=GRIPPER_OPEN_ANGLE_DEG,
+        close_angle_deg=GRIPPER_CLOSE_ANGLE_DEG,
     )
 
     gripper_stepper = MockGripperStepperAdapter()
