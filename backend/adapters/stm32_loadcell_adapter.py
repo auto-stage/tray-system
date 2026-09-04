@@ -18,6 +18,22 @@ class STM32LoadCellAdapter(LoadCellAdapter):
         self._tare_offset_g = 0.0
         self._last_weight_g = 0.0
 
+        # 데모 운용에서는 Backend 시작 시 캐리지가 비어 있다는
+        # 조건으로 HX711 #1의 현재 빈 캐리지 하중을 자동 영점으로 잡는다.
+        tare_result = self.tare()
+
+        if not tare_result.get("success"):
+            raise RuntimeError(
+                "HX711 #1 startup tare 실패: "
+                + str(tare_result.get("message", "원인 불명"))
+            )
+
+        print(
+            "[LOAD CELL] startup tare 완료 "
+            f"samples={tare_result.get('samples')} "
+            f"tare_offset_g={self._tare_offset_g:.1f}"
+        )
+
     def get_status(self) -> dict[str, Any]:
         result = self.stage.read_loadcell()
 
@@ -53,18 +69,29 @@ class STM32LoadCellAdapter(LoadCellAdapter):
         }
 
     def tare(self) -> dict[str, Any]:
-        result = self.stage.read_loadcell()
+        samples = 5
+        weights: list[float] = []
 
-        if not result.get("success"):
-            return result
+        for _ in range(samples):
+            result = self.stage.read_loadcell()
 
-        self._tare_offset_g = float(
-            result["weight_g"]
+            if not result.get("success"):
+                return result
+
+            weights.append(
+                float(result["weight_g"])
+            )
+
+        self._tare_offset_g = (
+            sum(weights) / len(weights)
         )
+
+        self._last_weight_g = weights[-1]
 
         return {
             "success": True,
             "mock": False,
+            "samples": samples,
             "tare_offset_g": self._tare_offset_g,
             "message": "Backend tare 완료",
         }

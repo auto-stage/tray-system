@@ -2,4 +2,5 @@ servo:
   # 상위 Backend가 OPEN/CLOSE 의미를 각도값으로 변환한다.
   # STM32에는 항상 SERVO <angle_deg> 명령만 전달된다.
   open_angle_deg: 0
-  close_angle_deg: 155
+  close_angle_deg: 65
+

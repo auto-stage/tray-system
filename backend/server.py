@@ -731,6 +731,26 @@ RETURN_SLOT_Z_OFFSET_MM = float(
     )
 )
 
+# Handoff/최종 Load Cell 위치에서 Tray를 다시 가져올 때만 적용.
+# Z+가 위쪽이므로 기본 -30 mm는 PICK 직전 30 mm 하강을 의미한다.
+# 실행 시 FINAL_HANDOFF_PICK_Z_OFFSET_MM로 언제든 조정할 수 있다.
+FINAL_HANDOFF_PICK_Z_OFFSET_MM = float(
+    os.getenv(
+        "FINAL_HANDOFF_PICK_Z_OFFSET_MM",
+        "-30.0",
+    )
+)
+
+# Handoff에 Tray를 내려놓을 때만 G축 전진거리 250 mm에서 감소.
+# generic MOVE G 프로토콜을 사용하므로 STM firmware 수정은 필요 없다.
+HANDOFF_DROP_EXTEND_REDUCTION_MM = float(
+    os.getenv(
+        "HANDOFF_DROP_EXTEND_REDUCTION_MM",
+        "30.0",
+    )
+)
+GRIPPER_FULL_EXTEND_MM = 250.0
+
 print(
     "[MATERIAL FLOW] "
     f"gripper_servo_bypass={'ON' if GRIPPER_SERVO_BYPASS else 'OFF'} "
@@ -739,7 +759,9 @@ print(
     f"release_monitor={RELEASE_MONITOR_TIMEOUT_S:.1f}s/"
     f"{RELEASE_MONITOR_POLL_S:.2f}s "
     f"confirm={RELEASE_CONFIRM_COUNT} "
-    f"return_slot_z_offset={RETURN_SLOT_Z_OFFSET_MM:+.1f}mm"
+    f"return_slot_z_offset={RETURN_SLOT_Z_OFFSET_MM:+.1f}mm "
+    f"handoff_pick_z_offset={FINAL_HANDOFF_PICK_Z_OFFSET_MM:+.1f}mm "
+    f"handoff_drop_extend={GRIPPER_FULL_EXTEND_MM - HANDOFF_DROP_EXTEND_REDUCTION_MM:.1f}mm"
 )
 
 
@@ -786,6 +808,9 @@ if (
         release_monitor_poll_sec=RELEASE_MONITOR_POLL_S,
         release_confirm_count=RELEASE_CONFIRM_COUNT,
         return_slot_z_offset_mm=RETURN_SLOT_Z_OFFSET_MM,
+        handoff_pick_z_offset_mm=FINAL_HANDOFF_PICK_Z_OFFSET_MM,
+        handoff_drop_extend_reduction_mm=HANDOFF_DROP_EXTEND_REDUCTION_MM,
+        gripper_full_extend_mm=GRIPPER_FULL_EXTEND_MM,
         # 실제 Stage에서는 ArUco 정렬을 BYPASS하지 않는다.
         # 함수 정의는 파일 뒤쪽에 있지만 callback은 실행 시점에 조회된다.
         alignment_callback=build_material_flow_alignment_callback(),
@@ -825,6 +850,9 @@ elif (
         release_monitor_poll_sec=RELEASE_MONITOR_POLL_S,
         release_confirm_count=RELEASE_CONFIRM_COUNT,
         return_slot_z_offset_mm=RETURN_SLOT_Z_OFFSET_MM,
+        handoff_pick_z_offset_mm=FINAL_HANDOFF_PICK_Z_OFFSET_MM,
+        handoff_drop_extend_reduction_mm=HANDOFF_DROP_EXTEND_REDUCTION_MM,
+        gripper_full_extend_mm=GRIPPER_FULL_EXTEND_MM,
         # Mock 장치 시험은 기존 BYPASS를 유지하되, 실제 ArUco 카메라를
         # 선택한 경우에는 동일한 정렬 callback으로 통합 시퀀스를 검증한다.
         alignment_callback=build_material_flow_alignment_callback(),
@@ -2313,14 +2341,32 @@ def final_loadcell_weight():
     return final_loadcell.read_weight()
 
 
+FINAL_TRAY_WEIGHT_G = float(
+    os.getenv("FINAL_TRAY_WEIGHT_G", "63.0")
+)
+FINAL_WEIGHT_TOLERANCE_G = float(
+    os.getenv("FINAL_WEIGHT_TOLERANCE_G", "5.0")
+)
+
+_final_vision_snapshots: dict[int, bytes] = {}
+
+
 class FinalVerificationItem(BaseModel):
     part_no: str
     quantity: int = Field(ge=1)
 
 
 class FinalVerificationRequest(BaseModel):
+    tray_id: int = Field(ge=1, le=6)
     items: list[FinalVerificationItem]
-    tolerance_g: float = Field(default=5.0, ge=0.0)
+    tolerance_g: float = Field(
+        default=FINAL_WEIGHT_TOLERANCE_G,
+        ge=0.0,
+    )
+
+
+class FinalVisionRequest(BaseModel):
+    tray_id: int = Field(ge=1, le=6)
 
 
 @app.post("/final-verification/check")
@@ -2328,18 +2374,19 @@ def final_verification_check(
     request: FinalVerificationRequest,
 ):
     """
-    작업지시 품목의 예상 총중량과
-    최종 박스 HX711 #2 실측 중량을 비교한다.
-    """
+    최종 Load Cell #2에서 현재 Tray 한 개만 검수한다.
 
+    parts.yaml의 weight_g는 실제 측정값으로 취급한다.
+    실측 부품 순중량 = 실측 총중량 - Tray 자체 무게 63 g
+    """
     if not request.items:
         return {
             "success": False,
             "passed": False,
-            "message": "검수할 품목이 없습니다.",
+            "message": f"TRAY {request.tray_id:02d} 검수 품목이 없습니다.",
         }
 
-    expected_weight_g = 0.0
+    expected_parts_weight_g = 0.0
     breakdown = []
 
     for item in request.items:
@@ -2347,225 +2394,134 @@ def final_verification_check(
             item.part_no,
             catalog=parts_catalog,
         )
-
         if part is None:
             return {
                 "success": False,
                 "passed": False,
-                "message": (
-                    f"등록되지 않은 품번입니다: "
-                    f"{item.part_no}"
-                ),
+                "message": f"등록되지 않은 품번입니다: {item.part_no}",
             }
 
         unit_weight = part.get("weight_g")
-
-        if unit_weight is None:
+        if unit_weight is None or float(unit_weight) <= 0.0:
             return {
                 "success": False,
                 "passed": False,
-                "message": (
-                    f"{item.part_no} "
-                    "실측 단위중량(weight_g)이 "
-                    "등록되지 않았습니다."
-                ),
+                "message": f"{item.part_no} 실측 weight_g 값이 올바르지 않습니다.",
             }
 
         unit_weight_g = float(unit_weight)
-
-        if unit_weight_g <= 0.0:
-            return {
-                "success": False,
-                "passed": False,
-                "message": (
-                    f"{item.part_no} "
-                    "weight_g 값이 올바르지 않습니다."
-                ),
-            }
-
-        total_weight_g = (
-            unit_weight_g
-            * item.quantity
-        )
-
-        expected_weight_g += total_weight_g
-
+        item_weight_g = unit_weight_g * int(item.quantity)
+        expected_parts_weight_g += item_weight_g
         breakdown.append({
             "part_no": item.part_no,
             "name": part.get("display_name"),
-            "quantity": item.quantity,
+            "quantity": int(item.quantity),
             "unit_weight_g": unit_weight_g,
-            "expected_weight_g": total_weight_g,
+            "expected_parts_weight_g": item_weight_g,
         })
 
-    # Mock 모드에서는 실제 HX711 #2가 없으므로 계산된 예상 중량을
-    # Mock 센서에 주입해 UI의 최종 무게 검수 흐름을 실제처럼 검증한다.
-    # MOCK_FINAL_WEIGHT_OFFSET_G로 정상/불량 시나리오를 선택할 수 있다.
     if (
         FINAL_LOADCELL_MODE == "mock"
         and hasattr(final_loadcell, "set_mock_weight")
     ):
         final_loadcell.set_mock_weight(
-            expected_weight_g + MOCK_FINAL_WEIGHT_OFFSET_G
+            FINAL_TRAY_WEIGHT_G
+            + expected_parts_weight_g
+            + MOCK_FINAL_WEIGHT_OFFSET_G
         )
 
     measurement = final_loadcell.read_weight()
-
     if not measurement.get("success"):
         return {
             "success": False,
             "passed": False,
-            "message": measurement.get(
-                "message",
-                "최종 Load Cell 측정 실패",
-            ),
+            "message": measurement.get("message", "최종 Load Cell 측정 실패"),
             "loadcell": measurement,
         }
 
-    measured_weight_g = float(
-        measurement["weight_g"]
-    )
-
-    difference_g = abs(
-        measured_weight_g
-        - expected_weight_g
-    )
-
-    loadcell_passed = (
-        difference_g
-        <= request.tolerance_g
-    )
-
-    vision_result = {
-        "enabled": False,
-        "status": "SKIPPED",
-        "passed": None,
-        "message": "최종 Vision 검수가 비활성화되어 있습니다.",
-    }
-
-    # Vision OFF이면 최종 판정은 Load Cell만 사용한다.
-    vision_passed = True
-
-    if FINAL_VISION_ENABLED:
-        if PART_INSPECTION_MODE != "yolo":
-            vision_result = {
-                "enabled": True,
-                "status": "ERROR",
-                "passed": False,
-                "message": (
-                    "최종 Vision 검수 ON 상태에서는 "
-                    "PART_INSPECTION_MODE=yolo가 필요합니다."
-                ),
-            }
-            vision_passed = False
-
-        else:
-            latest = yolo_vision.latest_result()
-
-            if not latest.get("success", False):
-                vision_result = {
-                    "enabled": True,
-                    "status": "ERROR",
-                    "passed": False,
-                    "message": latest.get(
-                        "message",
-                        "최종 Vision 결과를 사용할 수 없습니다.",
-                    ),
-                }
-                vision_passed = False
-
-            else:
-                detected_counts = {
-                    str(key): int(value)
-                    for key, value in dict(
-                        latest.get("counts", {})
-                    ).items()
-                }
-
-                expected_counts = {}
-
-                for item in request.items:
-                    part = find_part_by_identifier(
-                        item.part_no,
-                        catalog=parts_catalog,
-                    )
-
-                    class_key = part["class_key"]
-
-                    expected_counts[class_key] = (
-                        expected_counts.get(class_key, 0)
-                        + item.quantity
-                    )
-
-                mismatches = []
-
-                for key in sorted(
-                    set(expected_counts)
-                    | set(detected_counts)
-                ):
-                    expected = int(
-                        expected_counts.get(key, 0)
-                    )
-                    detected = int(
-                        detected_counts.get(key, 0)
-                    )
-
-                    if expected != detected:
-                        mismatches.append({
-                            "class_key": key,
-                            "expected": expected,
-                            "detected": detected,
-                        })
-
-                vision_passed = not mismatches
-
-                vision_result = {
-                    "enabled": True,
-                    "status": (
-                        "PASS"
-                        if vision_passed
-                        else "FAIL"
-                    ),
-                    "passed": vision_passed,
-                    "expected_counts": expected_counts,
-                    "detected_counts": detected_counts,
-                    "mismatches": mismatches,
-                }
-
-    passed = bool(
-        loadcell_passed
-        and vision_passed
-    )
+    measured_total_weight_g = float(measurement["weight_g"])
+    measured_parts_weight_g = measured_total_weight_g - FINAL_TRAY_WEIGHT_G
+    difference_g = abs(measured_parts_weight_g - expected_parts_weight_g)
+    passed = difference_g <= float(request.tolerance_g)
 
     return {
         "success": True,
         "passed": passed,
-        "expected_weight_g": round(
-            expected_weight_g,
-            3,
-        ),
-        "measured_weight_g": round(
-            measured_weight_g,
-            3,
-        ),
-        "difference_g": round(
-            difference_g,
-            3,
-        ),
-        "tolerance_g": request.tolerance_g,
+        "tray_id": request.tray_id,
+        "tray_weight_g": round(FINAL_TRAY_WEIGHT_G, 3),
+        "measured_total_weight_g": round(measured_total_weight_g, 3),
+        "measured_parts_weight_g": round(measured_parts_weight_g, 3),
+        "expected_parts_weight_g": round(expected_parts_weight_g, 3),
+        "difference_g": round(difference_g, 3),
+        "tolerance_g": float(request.tolerance_g),
         "breakdown": breakdown,
-        "loadcell": {
-            **measurement,
-            "enabled": True,
-            "passed": loadcell_passed,
-        },
-        "vision": vision_result,
+        "loadcell": {**measurement, "enabled": True, "passed": passed},
         "message": (
-            "최종 검수 PASS"
-            if passed
-            else "최종 검수 FAIL"
+            f"TRAY {request.tray_id:02d} 부품 순중량 검수 "
+            f"{'PASS' if passed else 'FAIL'}"
         ),
     }
+
+
+@app.post("/final-verification/vision")
+def final_verification_vision(
+    request: FinalVisionRequest,
+):
+    """비전 부품 검수 버튼을 누른 순간 C920 프레임 1장만 YOLO 추론한다."""
+    if not FINAL_VISION_ENABLED:
+        return {
+            "success": False,
+            "message": "FINAL_VISION_ENABLED=1일 때 사용할 수 있습니다.",
+        }
+    if PART_INSPECTION_MODE != "yolo":
+        return {
+            "success": False,
+            "message": "PART_INSPECTION_MODE=yolo가 필요합니다.",
+        }
+
+    frame = read_work_order_inspection_frame(copy=True)
+    if frame is None:
+        return {
+            "success": False,
+            "message": "C920 최종 검수 프레임을 얻지 못했습니다.",
+        }
+
+    yolo_vision.close()
+    try:
+        result = yolo_vision.infer_frame(frame)
+        snapshot = yolo_vision.get_debug_jpeg()
+    finally:
+        yolo_vision.start()
+
+    if not result.get("success"):
+        return result
+
+    if snapshot is not None:
+        _final_vision_snapshots[int(request.tray_id)] = snapshot
+
+    return {
+        **result,
+        "success": True,
+        "tray_id": request.tray_id,
+        "snapshot_available": snapshot is not None,
+    }
+
+
+@app.get("/final-verification/vision-snapshot/{tray_id}")
+def final_verification_vision_snapshot(
+    tray_id: int,
+):
+    snapshot = _final_vision_snapshots.get(int(tray_id))
+    if snapshot is None:
+        raise HTTPException(
+            status_code=404,
+            detail="해당 Tray의 비전 검수 스냅샷이 없습니다.",
+        )
+    return Response(
+        content=snapshot,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/loadcell/status")

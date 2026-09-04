@@ -1,8 +1,8 @@
 # Canonical part catalog for OCR, inspection, API, and UI.
 #
-# Physical dimensions and weight intentionally remain null until measured.
-# OpenCV reference features are collected from the real fixed camera and are
-# stored separately; no guessed classifier thresholds belong in this file.
+# Physical dimensions may remain null until measured.
+# weight_g values below are confirmed real measurements and are used by final weight verification.
+# OpenCV reference features are stored separately; no guessed classifier thresholds belong in this file.
 #
 # tray_id is the current operator-configurable part-to-Tray assignment.
 # Change tray_id when the physical contents are rearranged; IDs must be unique 1..6.
@@ -18,7 +18,7 @@ parts:
     inner_diameter_mm: null
     outer_diameter_mm: null
     height_mm: null
-    weight_g: 4.0  # TEMP: Mock 검수용, 실기 전 실측값으로 교체
+    weight_g: 4.0  # 실측값
     vision:
       calibrated: false
       roi: null
@@ -32,7 +32,7 @@ parts:
     nominal_size: null
     diameter_mm: null
     length_mm: null
-    weight_g: 11.0  # TEMP: Mock 검수용, 실기 전 실측값으로 교체
+    weight_g: 11.0  # 실측값
     vision:
       calibrated: false
       roi: null
@@ -46,7 +46,7 @@ parts:
     nominal_size: null
     diameter_mm: null
     length_mm: null
-    weight_g: 8.0  # TEMP: Mock 검수용, 실기 전 실측값으로 교체
+    weight_g: 8.0  # 실측값
     vision:
       calibrated: false
       roi: null
@@ -60,7 +60,7 @@ parts:
     width_mm: null
     height_mm: null
     thickness_mm: null
-    weight_g: 7.0  # TEMP: Mock 검수용, 실기 전 실측값으로 교체
+    weight_g: 7.0  # 실측값
     vision:
       calibrated: false
       roi: null
@@ -74,7 +74,7 @@ parts:
     length_mm: null
     width_mm: null
     height_mm: null
-    weight_g: 7.0  # TEMP: Mock 검수용, 실기 전 실측값으로 교체
+    weight_g: 7.0  # 실측값
     vision:
       calibrated: false
       roi: null
@@ -88,7 +88,7 @@ parts:
     leg_length_mm: null
     width_mm: null
     thickness_mm: null
-    weight_g: 8.5  # TEMP: Mock 검수용, 실기 전 실측값으로 교체
+    weight_g: 8.5  # 실측값
     vision:
       calibrated: false
       roi: null

@@ -3,7 +3,7 @@
   "positions": {
     "CONVEYOR_HANDOFF": {
       "x_mm": 10.0,
-      "z_mm": 208.0313,
+      "z_mm": 389.0313,
       "temporary": true,
       "note": "Temporary conveyor handoff position. X=10.0 mm + XC1ZR2 height."
     }

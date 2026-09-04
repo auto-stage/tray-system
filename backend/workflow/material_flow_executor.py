@@ -27,16 +27,20 @@ class MaterialFlowExecutor:
         loadcell,
         gripper_stepper=None,
         alignment_callback: Callable[[int], dict[str, Any]] | None = None,
-        tray_present_threshold_g: float = 100.0,
+        tray_present_threshold_g: float = 10.0,
         loadcell_samples: int = 5,
         grip_settle_sec: float = 0.5,
         stepper_settle_sec: float = 0.3,
         gripper_servo_bypass: bool = False,
+        tray_weight_change_threshold_g: float = 20.0,
         release_weight_change_threshold_g: float = 15.0,
         release_monitor_timeout_sec: float = 5.0,
         release_monitor_poll_sec: float = 0.2,
         release_confirm_count: int = 3,
         return_slot_z_offset_mm: float = 0.0,
+        handoff_pick_z_offset_mm: float = 0.0,
+        handoff_drop_extend_reduction_mm: float = 0.0,
+        gripper_full_extend_mm: float = 250.0,
     ) -> None:
 
         self.material_flow = material_flow
@@ -45,6 +49,14 @@ class MaterialFlowExecutor:
         self.loadcell = loadcell
         self.gripper_stepper = gripper_stepper
         self.gripper_servo_bypass = bool(gripper_servo_bypass)
+
+        # HX711 #1은 절대 무게가 아니라 EXTEND 직전과 RETRACT 완료 후의
+        # 5회 평균 하중 변화량으로 Tray 적재/하역 여부만 판정한다.
+        self.tray_weight_change_threshold_g = max(
+            float(tray_weight_change_threshold_g),
+            0.0,
+        )
+        self._pre_extend_load_g: float | None = None
 
         self.release_weight_change_threshold_g = max(
             float(release_weight_change_threshold_g),
@@ -71,6 +83,21 @@ class MaterialFlowExecutor:
         self.return_slot_z_offset_mm = float(
             return_slot_z_offset_mm
         )
+
+        # Handoff/최종 Load Cell 위치에서 Tray를 다시 집을 때만
+        # 적용하는 Z 미세 보정값.
+        # Z+는 위쪽이므로 음수 값은 Stage 하강을 의미한다.
+        self.handoff_pick_z_offset_mm = float(
+            handoff_pick_z_offset_mm
+        )
+
+        # Handoff에 Tray를 내려놓을 때만 G축 전진거리를 줄인다.
+        # 기존 STM generic MOVE G 프로토콜을 사용하므로 STM 수정은 없다.
+        self.handoff_drop_extend_reduction_mm = max(
+            float(handoff_drop_extend_reduction_mm),
+            0.0,
+        )
+        self.gripper_full_extend_mm = float(gripper_full_extend_mm)
 
         self.alignment_callback = alignment_callback
 
@@ -213,11 +240,30 @@ class MaterialFlowExecutor:
                     "STOP 상태이므로 EXTEND를 실행하지 않습니다.",
             }
 
+        baseline_result = self.loadcell.read_average(
+            samples=self.loadcell_samples,
+        )
+
+        if not baseline_result.get("success"):
+            return {
+                "success": False,
+                "message": baseline_result.get(
+                    "message",
+                    "EXTEND 직전 Load Cell baseline 측정 실패",
+                ),
+                "loadcell": baseline_result,
+            }
+
+        self._pre_extend_load_g = float(
+            baseline_result["average_weight_g"]
+        )
+
         if self.gripper_stepper is None:
             return {
                 "success": True,
                 "bypass": True,
                 "message": "Gripper EXTEND BYPASS",
+                "load_baseline_g": self._pre_extend_load_g,
             }
 
         result = self.gripper_stepper.extend()
@@ -227,6 +273,54 @@ class MaterialFlowExecutor:
                 self.stepper_settle_sec
             )
 
+        return result
+
+    def _extend_handoff_drop(self) -> dict[str, Any]:
+        """Handoff 하역 시에만 정상 250 mm보다 짧게 전진한다."""
+        reduction = self.handoff_drop_extend_reduction_mm
+        if reduction <= 1e-6:
+            return self._extend()
+
+        target_mm = self.gripper_full_extend_mm - reduction
+        if target_mm <= 0.0:
+            return {
+                "success": False,
+                "message": "Handoff 하역 G축 목표거리가 0 mm 이하입니다.",
+            }
+
+        if self._stop_requested():
+            return {
+                "success": False,
+                "cancelled": True,
+                "message": "STOP 상태이므로 Handoff EXTEND를 실행하지 않습니다.",
+            }
+
+        # RELEASE 변화량 판정을 위해 EXTEND 직전 5회 평균 baseline 유지.
+        baseline_result = self.loadcell.read_average(
+            samples=self.loadcell_samples,
+        )
+        if not baseline_result.get("success"):
+            return baseline_result
+        self._pre_extend_load_g = float(baseline_result["average_weight_g"])
+
+        if self.gripper_stepper is None:
+            return {
+                "success": True,
+                "bypass": True,
+                "message": f"Gripper Handoff EXTEND {target_mm:.1f} mm BYPASS",
+                "load_baseline_g": self._pre_extend_load_g,
+            }
+
+        move_to_mm = getattr(self.gripper_stepper, "move_to_mm", None)
+        if not callable(move_to_mm):
+            return {
+                "success": False,
+                "message": "Gripper Adapter가 임의 G축 위치 이동을 지원하지 않습니다.",
+            }
+
+        result = move_to_mm(target_mm)
+        if result.get("success"):
+            time.sleep(self.stepper_settle_sec)
         return result
 
     def _retract(self) -> dict[str, Any]:
@@ -254,6 +348,83 @@ class MaterialFlowExecutor:
             )
 
         return result
+
+    def _retract_empty_with_limit_recovery(self) -> dict[str, Any]:
+        """
+        Tray를 내려놓은 뒤 빈 Gripper를 수납한다.
+
+        정상적으로는 일반 RETRACT(논리 0 mm)를 사용한다.
+        다만 위치 오차 때문에 RETRACT 도중 물리 후진 리밋이 먼저
+        감지되어 정확히 FAULT / HOMED 0 / RETRACT_LIMIT 1 상태가 된
+        경우에만 HOME을 1회 실행하여 G축 기준점을 복구한다.
+
+        Tray를 잡고 있는 PICK RETRACT에는 이 복구를 사용하지 않는다.
+        """
+
+        retract_result = self._retract()
+
+        if retract_result.get("success"):
+            return retract_result
+
+        if (
+            retract_result.get("cancelled")
+            or retract_result.get("timeout")
+            or self._stop_requested()
+        ):
+            return retract_result
+
+        message = str(
+            retract_result.get("message", "")
+        ).upper()
+
+        recoverable_limit_fault = all((
+            "GRIPPER STATUS FAULT" in message,
+            "HOMED 0" in message,
+            "RETRACT_LIMIT 1" in message,
+            "EXTEND_LIMIT 0" in message,
+        ))
+
+        if not recoverable_limit_fault:
+            return retract_result
+
+        home = getattr(
+            self.gripper_stepper,
+            "home",
+            None,
+        )
+
+        if not callable(home):
+            return retract_result
+
+        home_result = home()
+
+        if not home_result.get("success"):
+            return {
+                "success": False,
+                "recovery_attempted": True,
+                "message": (
+                    "빈 Gripper RETRACT 중 후진 리밋 FAULT 발생 후 "
+                    "HOME 복구에도 실패했습니다: "
+                    f"{home_result.get('message', 'HOME 실패')}"
+                ),
+                "retract_result": retract_result,
+                "home_result": home_result,
+            }
+
+        if self.stepper_settle_sec > 0.0:
+            time.sleep(self.stepper_settle_sec)
+
+        return {
+            "success": True,
+            "recovered": True,
+            "recovery": "HOME_AFTER_RETRACT_LIMIT_FAULT",
+            "message": (
+                "빈 Gripper RETRACT 중 후진 리밋 FAULT를 "
+                "HOME으로 복구했습니다."
+            ),
+            "retract_result": retract_result,
+            "home_result": home_result,
+        }
 
     def _grip_close(self) -> dict[str, Any]:
         """
@@ -451,6 +622,106 @@ class MaterialFlowExecutor:
                 consecutive,
         }
 
+    def _verify_pick_by_change(self) -> dict[str, Any]:
+        """EXTEND 직전보다 RETRACT 후 하중이 20g 이상 증가했는지 확인한다."""
+
+        if self._pre_extend_load_g is None:
+            return {
+                "success": False,
+                "message": "PICK Load Cell baseline이 없습니다.",
+            }
+
+        result = self.loadcell.read_average(
+            samples=self.loadcell_samples,
+        )
+
+        if not result.get("success"):
+            return result
+
+        before_g = float(self._pre_extend_load_g)
+        after_g = float(result["average_weight_g"])
+        change_g = after_g - before_g
+
+        passed = (
+            change_g
+            >= self.tray_weight_change_threshold_g
+        )
+
+        print(
+            "[PICK LOAD CHANGE] "
+            f"before={before_g:.1f}g "
+            f"after={after_g:.1f}g "
+            f"change={change_g:+.1f}g "
+            f"threshold=+{self.tray_weight_change_threshold_g:.1f}g "
+            f"passed={passed}"
+        )
+
+        return {
+            **result,
+            "measured_average_weight_g": after_g,
+
+            # 기존 UI가 average_weight_g를 표시하므로
+            # 절대값 대신 실제 판정 변화량을 표시한다.
+            "average_weight_g": change_g,
+
+            "tray_present": passed,
+            "baseline_weight_g": before_g,
+            "after_weight_g": after_g,
+            "weight_change_g": change_g,
+            "threshold_g":
+                self.tray_weight_change_threshold_g,
+            "comparison": "increase",
+        }
+
+    def _verify_release_by_change_once(
+        self,
+    ) -> dict[str, Any]:
+        """EXTEND 직전보다 RETRACT 후 하중이 20g 이상 감소했는지 확인한다."""
+
+        if self._pre_extend_load_g is None:
+            return {
+                "success": False,
+                "message": "RELEASE Load Cell baseline이 없습니다.",
+            }
+
+        result = self.loadcell.read_average(
+            samples=self.loadcell_samples,
+        )
+
+        if not result.get("success"):
+            return result
+
+        before_g = float(self._pre_extend_load_g)
+        after_g = float(result["average_weight_g"])
+        change_g = before_g - after_g
+
+        passed = (
+            change_g
+            >= self.tray_weight_change_threshold_g
+        )
+
+        print(
+            "[RELEASE LOAD CHANGE] "
+            f"before={before_g:.1f}g "
+            f"after={after_g:.1f}g "
+            f"drop={change_g:+.1f}g "
+            f"threshold=+{self.tray_weight_change_threshold_g:.1f}g "
+            f"passed={passed}"
+        )
+
+        return {
+            **result,
+            "measured_average_weight_g": after_g,
+            "average_weight_g": change_g,
+            "tray_released": passed,
+            "baseline_weight_g": before_g,
+            "after_weight_g": after_g,
+            "weight_change_g": change_g,
+            "threshold_g":
+                self.tray_weight_change_threshold_g,
+            "comparison": "decrease",
+        }
+
     def _align(
         self,
         tray_id: int,
@@ -487,6 +758,7 @@ class MaterialFlowExecutor:
         -> ArUco 재보정 callback
         -> EXTEND
         -> CLOSE
+        -> RETRACT
         -> Load Cell 재확인
 
         alignment_callback이 없으면 ArUco 단계는 BYPASS된다.
@@ -595,16 +867,32 @@ class MaterialFlowExecutor:
 
         time.sleep(self.grip_settle_sec)
 
+        # Tray를 선반에서 캐리지 위로 완전히 인출한 뒤
+        # 캐리지 Load Cell로 존재 여부를 판정한다.
+        result = self._retract()
+        history.append({
+            "step": "PICK_RETRY_EXTRACT_RETRACT",
+            "result": result,
+        })
+
+        if not result.get("success"):
+            return {
+                "success": False,
+                "step": "PICK_RETRY_EXTRACT_RETRACT",
+                "message": result.get(
+                    "message",
+                    "PICK 재시도 인출 RETRACT 실패",
+                ),
+                "history": history,
+            }
+
         if self._stop_requested():
             return self._cancelled(
                 "BEFORE_LOAD_VERIFY_PICK",
                 history,
             )
 
-        load_result = self.loadcell.tray_present(
-            threshold_g=self.tray_present_threshold_g,
-            samples=self.loadcell_samples,
-        )
+        load_result = self._verify_pick_by_change()
 
         history.append({
             "step": "PICK_RETRY_LOAD_VERIFY",
@@ -654,6 +942,7 @@ class MaterialFlowExecutor:
         -> RETRACT
         -> EXTEND
         -> CLOSE
+        -> RETRACT
         -> Load Cell 재확인
 
         Handoff 파지이므로 ArUco 재정렬은 수행하지 않는다.
@@ -737,16 +1026,29 @@ class MaterialFlowExecutor:
 
         time.sleep(self.grip_settle_sec)
 
+        # Handoff Tray를 캐리지 위로 완전히 인출한 뒤
+        # 캐리지 Load Cell로 존재 여부를 판정한다.
+        result = self._retract()
+        history.append({
+            "step": "RETURN_PICK_RETRY_EXTRACT_RETRACT",
+            "result": result,
+        })
+
+        if not result.get("success"):
+            failure = self._failed(
+                "RETURN_PICK_RETRY_EXTRACT_RETRACT",
+                result,
+            )
+            failure["history"] = history
+            return failure
+
         if self._stop_requested():
             return self._cancelled(
                 "BEFORE_RETURN_RETRY_LOAD_VERIFY",
                 history,
             )
 
-        load_result = self.loadcell.tray_present(
-            threshold_g=self.tray_present_threshold_g,
-            samples=self.loadcell_samples,
-        )
+        load_result = self._verify_pick_by_change()
 
         history.append({
             "step": "RETURN_PICK_RETRY_LOAD_VERIFY",
@@ -788,14 +1090,8 @@ class MaterialFlowExecutor:
 
     def _recheck_release_once(
         self,
-        baseline_weight_g: float,
     ) -> dict[str, Any]:
-        """
-        OPEN 후 Tray 해제가 확인되지 않을 경우
-        추가 대기 후 Load Cell을 딱 1회 재확인한다.
-
-        재확인에도 실패하면 RETRACT / Stage 이동을 진행하지 않는다.
-        """
+        """동일 EXTEND 직전 baseline 대비 하중 감소량을 1회 재확인한다."""
 
         time.sleep(self.grip_settle_sec)
 
@@ -804,9 +1100,7 @@ class MaterialFlowExecutor:
                 "BEFORE_LOAD_VERIFY_RELEASE",
             )
 
-        load_result = self._verify_release_by_change(
-            baseline_weight_g=baseline_weight_g,
-        )
+        load_result = self._verify_release_by_change_once()
 
         if not load_result.get("success"):
             return {
@@ -828,7 +1122,9 @@ class MaterialFlowExecutor:
                 "step": "RELEASE_FAILED",
                 "message": (
                     "Tray 해제 재확인 후에도 "
-                    "하중이 남아 있습니다."
+                    f"하중 감소량이 "
+                    f"{self.tray_weight_change_threshold_g:.1f}g "
+                    "미만입니다."
                 ),
                 "loadcell": load_result,
             }
@@ -998,13 +1294,36 @@ class MaterialFlowExecutor:
         )
 
         # ----------------------------------------------------
-        # 5. Load Cell → Tray 파지 확인
+        # 5. Gripper 후진 → Tray를 캐리지 위로 완전히 인출
+        # ----------------------------------------------------
+
+        self._set_progress(
+            phase="SUPPLY",
+            step="PICK_RETRACT",
+            message="Tray 인출 후 Gripper 후진 중",
+        )
+
+        result = self._retract()
+
+        history.append({
+            "step": "GRIPPER_RETRACT",
+            "result": result,
+        })
+
+        if not result.get("success"):
+            return self._failed(
+                "GRIPPER_RETRACT",
+                result,
+            )
+
+        # ----------------------------------------------------
+        # 6. Load Cell → 캐리지 위 Tray 존재 확인
         # ----------------------------------------------------
 
         self._set_progress(
             phase="SUPPLY",
             step="LOAD_VERIFY_PICK",
-            message="Load Cell로 Tray 파지 상태 확인 중",
+            message="Load Cell로 Tray 인출 상태 확인 중",
         )
 
         if self._stop_requested():
@@ -1013,10 +1332,7 @@ class MaterialFlowExecutor:
                 history,
             )
 
-        load_result = self.loadcell.tray_present(
-            threshold_g=self.tray_present_threshold_g,
-            samples=self.loadcell_samples,
-        )
+        load_result = self._verify_pick_by_change()
 
         self._set_validation(
             validation_type="PICK",
@@ -1106,29 +1422,8 @@ class MaterialFlowExecutor:
                 },
             )
 
-        # ----------------------------------------------------
-        # 6. Gripper 후진
-        # ----------------------------------------------------
-
-        self._set_progress(
-            phase="SUPPLY",
-            step="PICK_RETRACT",
-            message="Tray 인출 후 Gripper 후진 중",
-        )
-
-        result = self._retract()
-
-        history.append({
-            "step": "GRIPPER_RETRACT",
-            "result": result,
-        })
-
-        if not result.get("success"):
-            return self._failed(
-                "GRIPPER_RETRACT",
-                result,
-            )
-
+        # 정상 경로와 PICK 재시도 경로 모두 이 시점에는
+        # RETRACT 및 Load Cell 확인이 완료된 상태다.
         self.material_flow.supply_extraction_complete()
 
         # ----------------------------------------------------
@@ -1167,10 +1462,13 @@ class MaterialFlowExecutor:
         self._set_progress(
             phase="SUPPLY",
             step="HANDOFF_EXTEND",
-            message="Tray 전달을 위해 Gripper 전진 중",
+            message=(
+                "Tray 전달을 위해 Gripper 전진 중 "
+                f"({self.gripper_full_extend_mm - self.handoff_drop_extend_reduction_mm:.1f} mm)"
+            ),
         )
 
-        result = self._extend()
+        result = self._extend_handoff_drop()
 
         history.append({
             "step": "HANDOFF_EXTEND",
@@ -1186,23 +1484,6 @@ class MaterialFlowExecutor:
         # ----------------------------------------------------
         # 9. Tray 해제
         # ----------------------------------------------------
-
-        baseline_result = self._measure_release_baseline()
-
-        history.append({
-            "step": "LOAD_BASELINE_BEFORE_RELEASE",
-            "result": baseline_result,
-        })
-
-        if not baseline_result.get("success"):
-            return self._failed(
-                "LOAD_BASELINE_BEFORE_RELEASE",
-                baseline_result,
-            )
-
-        release_baseline_weight_g = float(
-            baseline_result["average_weight_g"]
-        )
 
         self._set_progress(
             phase="SUPPLY",
@@ -1232,13 +1513,36 @@ class MaterialFlowExecutor:
         self._wait_after_release_open()
 
         # ----------------------------------------------------
-        # 10. Load Cell → Tray 전달 확인
+        # 10. Gripper 후진 → Tray를 캐리지에서 완전히 분리
+        # ----------------------------------------------------
+
+        self._set_progress(
+            phase="SUPPLY",
+            step="HANDOFF_RETRACT",
+            message="Tray 전달 후 Gripper 후진 중",
+        )
+
+        result = self._retract_empty_with_limit_recovery()
+
+        history.append({
+            "step": "HANDOFF_RETRACT",
+            "result": result,
+        })
+
+        if not result.get("success"):
+            return self._failed(
+                "HANDOFF_RETRACT",
+                result,
+            )
+
+        # ----------------------------------------------------
+        # 11. Load Cell → 캐리지에서 Tray가 사라졌는지 확인
         # ----------------------------------------------------
 
         self._set_progress(
             phase="SUPPLY",
             step="LOAD_VERIFY_RELEASE",
-            message="Load Cell로 Tray 전달 상태 확인 중",
+            message="Load Cell로 Tray 전달 완료 상태 확인 중",
         )
 
         if self._stop_requested():
@@ -1247,9 +1551,7 @@ class MaterialFlowExecutor:
                 history,
             )
 
-        load_result = self._verify_release_by_change(
-            baseline_weight_g=release_baseline_weight_g,
-        )
+        load_result = self._verify_release_by_change_once()
 
         self._set_validation(
             validation_type="RELEASE",
@@ -1280,9 +1582,7 @@ class MaterialFlowExecutor:
             "tray_released",
             False,
         ):
-            recheck_result = self._recheck_release_once(
-                release_baseline_weight_g
-            )
+            recheck_result = self._recheck_release_once()
 
             history.append({
                 "step": "LOAD_RELEASE_RECHECK",
@@ -1329,29 +1629,6 @@ class MaterialFlowExecutor:
                         ),
                     "recheck": True,
                 },
-            )
-
-        # ----------------------------------------------------
-        # 11. Gripper 후진
-        # ----------------------------------------------------
-
-        self._set_progress(
-            phase="SUPPLY",
-            step="HANDOFF_RETRACT",
-            message="Tray 전달 완료 후 Gripper 후진 중",
-        )
-
-        result = self._retract()
-
-        history.append({
-            "step": "HANDOFF_RETRACT",
-            "result": result,
-        })
-
-        if not result.get("success"):
-            return self._failed(
-                "HANDOFF_RETRACT",
-                result,
             )
 
         if self._stop_requested():
@@ -1424,7 +1701,40 @@ class MaterialFlowExecutor:
                 "message": str(exc),
             }
 
-        # 2. Handoff에서 전진
+        # 2. Handoff/최종 Load Cell에서 Tray를 다시 집기 위한 Z 보정
+        # Handoff에 내려놓는 높이는 변경하지 않고 PICK 직전에만 적용한다.
+        if abs(self.handoff_pick_z_offset_mm) > 1e-6:
+            self._set_progress(
+                phase="RETURN",
+                step="HANDOFF_PICK_Z_OFFSET",
+                message=(
+                    "Handoff Tray PICK 높이 "
+                    f"Z {self.handoff_pick_z_offset_mm:+.1f} mm 보정 중"
+                ),
+                detail={
+                    "tray_id": tray_id,
+                    "z_offset_mm": self.handoff_pick_z_offset_mm,
+                },
+            )
+
+            result = self.stage.move_relative(
+                0.0,
+                self.handoff_pick_z_offset_mm,
+            )
+
+            history.append({
+                "step": "HANDOFF_PICK_Z_OFFSET",
+                "z_offset_mm": self.handoff_pick_z_offset_mm,
+                "result": result,
+            })
+
+            if not result.get("success"):
+                return self._failed(
+                    "HANDOFF_PICK_Z_OFFSET",
+                    result,
+                )
+
+        # 3. Handoff에서 전진
         result = self._extend()
 
         history.append({
@@ -1462,17 +1772,28 @@ class MaterialFlowExecutor:
             self.grip_settle_sec
         )
 
-        # 4. Load Cell 파지 확인
+        # 4. 후진 → Handoff Tray를 캐리지 위로 완전히 인출
+        result = self._retract()
+
+        history.append({
+            "step": "RETURN_RETRACT",
+            "result": result,
+        })
+
+        if not result.get("success"):
+            return self._failed(
+                "RETURN_RETRACT",
+                result,
+            )
+
+        # 5. Load Cell → 캐리지 위 Tray 존재 확인
         if self._stop_requested():
             return self._cancelled(
                 "BEFORE_LOAD_VERIFY_PICK",
                 history,
             )
 
-        load_result = self.loadcell.tray_present(
-            threshold_g=self.tray_present_threshold_g,
-            samples=self.loadcell_samples,
-        )
+        load_result = self._verify_pick_by_change()
 
         history.append({
             "step": "RETURN_LOAD_VERIFY_PICK",
@@ -1521,20 +1842,8 @@ class MaterialFlowExecutor:
                     "history": history,
                 }
 
-        # 5. 후진
-        result = self._retract()
-
-        history.append({
-            "step": "RETURN_RETRACT",
-            "result": result,
-        })
-
-        if not result.get("success"):
-            return self._failed(
-                "RETURN_RETRACT",
-                result,
-            )
-
+        # 정상 경로와 PICK 재시도 경로 모두 이 시점에는
+        # RETRACT 및 Load Cell 확인이 완료된 상태다.
         self.material_flow.return_pick_complete()
 
         # 6. 해당 Slot으로 이동
@@ -1620,23 +1929,6 @@ class MaterialFlowExecutor:
             )
 
         # 8. Tray 해제
-        baseline_result = self._measure_release_baseline()
-
-        history.append({
-            "step": "RETURN_LOAD_BASELINE_BEFORE_RELEASE",
-            "result": baseline_result,
-        })
-
-        if not baseline_result.get("success"):
-            return self._failed(
-                "RETURN_LOAD_BASELINE_BEFORE_RELEASE",
-                baseline_result,
-            )
-
-        release_baseline_weight_g = float(
-            baseline_result["average_weight_g"]
-        )
-
         if self._stop_requested():
             return self._cancelled(
                 "BEFORE_GRIP_OPEN",
@@ -1658,16 +1950,40 @@ class MaterialFlowExecutor:
 
         self._wait_after_release_open()
 
-        # 9. Load Cell 해제 확인
+        # 9. 반납 후 빈 Gripper 수납
+        # 정상 RETRACT를 우선 사용하고, 물리 후진 리밋이 먼저
+        # 들어온 특정 위치 오차 FAULT에서만 HOME으로 복구한다.
+        self._set_progress(
+            phase="RETURN",
+            step="RETURN_INSERT_RETRACT",
+            message="Tray 반납 후 Gripper 후진 중",
+        )
+
+        result = self._retract_empty_with_limit_recovery()
+
+        history.append({
+            "step": "RETURN_INSERT_RETRACT",
+            "action": result.get(
+                "recovery",
+                "GRIPPER_RETRACT",
+            ),
+            "result": result,
+        })
+
+        if not result.get("success"):
+            return self._failed(
+                "RETURN_INSERT_RETRACT",
+                result,
+            )
+
+        # 10. Load Cell → 캐리지에서 Tray가 사라졌는지 확인
         if self._stop_requested():
             return self._cancelled(
                 "BEFORE_LOAD_VERIFY_RELEASE",
                 history,
             )
 
-        load_result = self._verify_release_by_change(
-            baseline_weight_g=release_baseline_weight_g,
-        )
+        load_result = self._verify_release_by_change_once()
 
         history.append({
             "step": "RETURN_LOAD_VERIFY_RELEASE",
@@ -1690,9 +2006,7 @@ class MaterialFlowExecutor:
             "tray_released",
             False,
         ):
-            recheck_result = self._recheck_release_once(
-                release_baseline_weight_g
-            )
+            recheck_result = self._recheck_release_once()
 
             history.append({
                 "step": "RETURN_RELEASE_RECHECK",
@@ -1715,32 +2029,6 @@ class MaterialFlowExecutor:
                     ),
                     "history": history,
                 }
-
-        # 10. 반납 후 G축 수납 + 원점 재확립
-        #
-        # 일반 RETRACT 중 물리 RETRACT LIMIT에 먼저 닿으면
-        # 위치 오차 때문에 FAULT/HOMED 0이 될 수 있다.
-        # 반납 후에는 Tray를 이미 놓은 빈 Gripper이므로
-        # HOME 시퀀스로 안전하게 수납하고 G=0을 다시 확립한다.
-        self._set_progress(
-            phase="RETURN",
-            step="RETURN_INSERT_RETRACT",
-            message="Tray 반납 후 Gripper HOME/후진 중",
-        )
-
-        result = self.gripper_stepper.home()
-
-        history.append({
-            "step": "RETURN_INSERT_RETRACT",
-            "action": "GRIPPER_HOME",
-            "result": result,
-        })
-
-        if not result.get("success"):
-            return self._failed(
-                "RETURN_INSERT_RETRACT",
-                result,
-            )
 
         self.material_flow.return_insert_complete()
 

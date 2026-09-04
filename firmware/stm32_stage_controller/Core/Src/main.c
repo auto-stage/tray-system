@@ -248,7 +248,7 @@ static bool HX711_2_CalValid = true;
 #define GRIPPER_EXTEND_LIMIT_GPIO_PORT       GPIOE
 #define GRIPPER_EXTEND_LIMIT_GPIO_PIN        GPIO_PIN_13
 #define GRIPPER_DEFAULT_STEPS_PER_MM         10.616f
-#define GRIPPER_EXTEND_POSITION_MM           200.0f
+#define GRIPPER_EXTEND_POSITION_MM           250.0f
 #define GRIPPER_RETRACT_POSITION_MM          0.0f
 #define GRIPPER_DEFAULT_STEP_HZ              800U
 #define GRIPPER_HOME_STEP_HZ                 400U
@@ -2199,7 +2199,16 @@ static void StageProtocol_HandleLine(char *line)
     return;
   }
 
-  if (!StageProtocol_ParseAxis(axis_text, &axis))
+  /*
+   * Generic axis commands remain restricted to X/Z.
+   * Only MOVE G is accepted so the backend can place the gripper at an
+   * intermediate handoff position without exposing JOG/SET_* on G.
+   */
+  if ((strcmp(command, "MOVE") == 0) && (strcmp(axis_text, "G") == 0))
+  {
+    axis = STAGE_AXIS_G;
+  }
+  else if (!StageProtocol_ParseAxis(axis_text, &axis))
   {
     StageProtocol_Reply(STAGE_ERR_AXIS);
     return;

@@ -262,6 +262,112 @@ class STM32GripperStepperAdapter:
             "message": wait_result.get("message", f"GRIPPER {action} 완료"),
         }
 
+    def move_to_mm(
+        self,
+        target_mm: float,
+        *,
+        speed_mm_s: float = 75.36,
+        accel_mm_s2: float = 200.0,
+    ) -> dict[str, Any]:
+        """
+        기존 STM32 generic MOVE G 프로토콜을 이용해 G축을 임의 절대 위치로 이동한다.
+
+        STM firmware가 generic MOVE G를 허용해야 하며, 현재 G 위치는
+        GRIPPER STATUS의 POS_MM에서 읽고 MOVE G에는 상대거리만 전달한다.
+        """
+        if self.stage._stop_event.is_set():
+            return {
+                "success": False,
+                "cancelled": True,
+                "action": "MOVE_TO_MM",
+                "message": "STOP 상태이므로 Gripper 이동을 시작하지 않습니다.",
+            }
+
+        connection_error = self._ensure_connected()
+        if connection_error:
+            return connection_error
+
+        status = self.stage._send_expect(
+            "GRIPPER STATUS",
+            success="GRIPPER STATUS",
+            timeout=1.0,
+        )
+        if not status.get("success"):
+            return status
+
+        message = str(status.get("message", ""))
+        import re
+        match = re.search(r"\bPOS_MM\s+(-?\d+(?:\.\d+)?)", message)
+        if match is None:
+            return {
+                "success": False,
+                "action": "MOVE_TO_MM",
+                "message": f"GRIPPER STATUS에서 POS_MM 파싱 실패: {message}",
+            }
+
+        if " HOMED 1 " not in f" {message} ":
+            home_result = self.home()
+            if not home_result.get("success"):
+                return {
+                    "success": False,
+                    "action": "MOVE_TO_MM",
+                    "message": home_result.get("message", "Gripper HOME 실패"),
+                }
+            status = self.stage._send_expect(
+                "GRIPPER STATUS",
+                success="GRIPPER STATUS",
+                timeout=1.0,
+            )
+            message = str(status.get("message", ""))
+            match = re.search(r"\bPOS_MM\s+(-?\d+(?:\.\d+)?)", message)
+            if not status.get("success") or match is None:
+                return {
+                    "success": False,
+                    "action": "MOVE_TO_MM",
+                    "message": "HOME 후 GRIPPER STATUS 확인 실패",
+                }
+
+        current_mm = float(match.group(1))
+        target_mm = float(target_mm)
+        delta_mm = target_mm - current_mm
+
+        if abs(delta_mm) < 0.05:
+            return {
+                "success": True,
+                "action": "MOVE_TO_MM",
+                "target_mm": target_mm,
+                "message": f"GRIPPER 이미 {target_mm:.1f} mm 위치",
+            }
+
+        result = self.stage._send_expect(
+            f"MOVE G {delta_mm:.6g} {float(speed_mm_s):.6g} {float(accel_mm_s2):.6g}",
+            success="OK OK",
+            timeout=2.0,
+        )
+        if not result.get("success"):
+            return {
+                "success": False,
+                "action": "MOVE_TO_MM",
+                "message": result.get("message", "GRIPPER MOVE G 실패"),
+                "received": result.get("received", []),
+            }
+
+        wait_result = self._wait_until_idle(timeout=15.0)
+        if not wait_result.get("success"):
+            return {
+                "success": False,
+                "action": "MOVE_TO_MM",
+                "message": wait_result.get("message", "GRIPPER MOVE G 완료 대기 실패"),
+                "received": wait_result.get("received", []),
+            }
+
+        return {
+            "success": True,
+            "action": "MOVE_TO_MM",
+            "target_mm": target_mm,
+            "message": wait_result.get("message", f"GRIPPER {target_mm:.1f} mm 이동 완료"),
+        }
+
     def extend(self) -> dict[str, Any]:
         return self._move("EXTEND")
 

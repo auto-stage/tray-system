@@ -3117,648 +3117,228 @@ function FinalVerificationScreen({
   items: WorkItem[]; isPaused: boolean; showStop: boolean
   onPass: () => void; onPause: () => void; onStop: () => void
 }) {
-  const [weightResult, setWeightResult] =
-    useState<'checking' | 'pass' | 'fail' | 'error'>('checking')
+  type CheckState = {
+    status: 'idle' | 'checking' | 'pass' | 'fail' | 'error' | 'done'
+    data?: any
+    message?: string
+    cacheKey?: number
+  }
 
-  const [verification, setVerification] =
-    useState<any>(null)
+  const trays = Array.from(new Set(items.map(item => item.tray)))
+  const [trayIndex, setTrayIndex] = useState(0)
+  const [weights, setWeights] = useState<Record<string, CheckState>>({})
+  const [visions, setVisions] = useState<Record<string, CheckState>>({})
 
-  const [autoCountdown, setAutoCountdown] =
-    useState<number | null>(null)
+  const tray = trays[trayIndex] ?? ''
+  const trayId = Number(tray.match(/\d+/)?.[0] ?? -1)
+  const trayItems = items.filter(item => item.tray === tray)
+  const weight = weights[tray] ?? { status: 'idle' as const }
+  const vision = visions[tray] ?? { status: 'idle' as const }
 
-  // 실제 하드웨어 반복 측정 후 config로 이동 예정.
-  const toleranceG = 5.0
+  const allWeightPassed = trays.length > 0 && trays.every(
+    label => weights[label]?.status === 'pass'
+  )
 
-  const runFinalVerification = async () => {
-    setWeightResult('checking')
-    setAutoCountdown(null)
+  const statusLabel = (status: CheckState['status']) =>
+    status === 'pass' ? 'PASS'
+    : status === 'fail' ? 'FAIL'
+    : status === 'checking' ? 'CHECKING'
+    : status === 'error' ? 'ERROR'
+    : status === 'done' ? 'DONE'
+    : 'WAIT'
 
+  const fmt = (value: unknown) =>
+    Number.isFinite(Number(value)) ? `${Number(value).toFixed(1)} g` : '-'
+
+  const checkWeight = async () => {
+    if (!tray || isPaused || showStop) return
+    setWeights(current => ({ ...current, [tray]: { status: 'checking' } }))
     try {
       const response = await fetch(
         'http://127.0.0.1:8000/final-verification/check',
         {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            items: items.map(item => ({
+            tray_id: trayId,
+            items: trayItems.map(item => ({
               part_no: item.partNo,
               quantity: item.qty,
             })),
-            tolerance_g: toleranceG,
           }),
         }
       )
-
-      if (!response.ok) {
-        throw new Error(
-          `Final Verification 서버 오류: ${response.status}`
-        )
-      }
-
       const result = await response.json()
-
-      setVerification(result)
-
-      if (!result.success) {
-        setWeightResult('error')
-        return
+      if (!response.ok || !result.success) {
+        throw new Error(result.message ?? `서버 오류 ${response.status}`)
       }
-
-      setWeightResult(
-        result.passed === true
-          ? 'pass'
-          : 'fail'
-      )
-
+      setWeights(current => ({
+        ...current,
+        [tray]: { status: result.passed ? 'pass' : 'fail', data: result },
+      }))
     } catch (error) {
-      console.error(
-        '[FINAL VERIFICATION] 검수 요청 실패:',
-        error
-      )
-
-      setVerification({
-        success: false,
-        passed: false,
-        message:
-          error instanceof Error
-            ? error.message
-            : '최종 검수 요청 실패',
-      })
-
-      setWeightResult('error')
+      setWeights(current => ({
+        ...current,
+        [tray]: {
+          status: 'error',
+          message: error instanceof Error ? error.message : 'Tray 무게 검수 실패',
+        },
+      }))
     }
   }
 
-  useEffect(() => {
-    if (isPaused || showStop) {
+  const checkVision = async () => {
+    if (!tray || isPaused || showStop) return
+    setVisions(current => ({ ...current, [tray]: { status: 'checking' } }))
+    try {
+      const response = await fetch(
+        'http://127.0.0.1:8000/final-verification/vision',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tray_id: trayId }),
+        }
+      )
+      const result = await response.json()
+      if (!response.ok || !result.success) {
+        throw new Error(result.message ?? `서버 오류 ${response.status}`)
+      }
+      setVisions(current => ({
+        ...current,
+        [tray]: { status: 'done', data: result, cacheKey: Date.now() },
+      }))
+    } catch (error) {
+      setVisions(current => ({
+        ...current,
+        [tray]: {
+          status: 'error',
+          message: error instanceof Error ? error.message : '비전 부품 검수 실패',
+        },
+      }))
+    }
+  }
+
+  const next = () => {
+    if (weight.status !== 'pass') return
+    if (trayIndex < trays.length - 1) {
+      setTrayIndex(current => current + 1)
       return
     }
+    if (allWeightPassed) onPass()
+  }
 
-    void runFinalVerification()
-  }, [])
-
-  useEffect(() => {
-    if (
-      weightResult !== 'pass'
-      || isPaused
-      || showStop
-    ) {
-      return
-    }
-
-    setAutoCountdown(3)
-  }, [weightResult, isPaused, showStop])
-
-  useEffect(() => {
-    if (
-      autoCountdown === null
-      || isPaused
-      || showStop
-    ) {
-      return
-    }
-
-    if (autoCountdown <= 0) {
-      onPass()
-      return
-    }
-
-    const timer = setTimeout(
-      () =>
-        setAutoCountdown(
-          current => (current ?? 1) - 1
-        ),
-      1000
-    )
-
-    return () => clearTimeout(timer)
-  }, [
-    autoCountdown,
-    isPaused,
-    showStop,
-    onPass,
-  ])
-
-  const breakdown =
-    Array.isArray(verification?.breakdown)
-      ? verification.breakdown
-      : []
-
-  const expectedWeightG =
-    Number(verification?.expected_weight_g)
-
-  const measuredWeightG =
-    Number(verification?.measured_weight_g)
-
-  const differenceG =
-    Number(verification?.difference_g)
-
-  const returnedToleranceG =
-    Number(
-      verification?.tolerance_g
-      ?? toleranceG
-    )
-
-  const valueOrDash = (
-    value: number,
-    digits = 1,
-  ) =>
-    Number.isFinite(value)
-      ? `${value.toFixed(digits)} g`
-      : '-'
-
-  const isPass =
-    weightResult === 'pass'
-
-  const isFail =
-    weightResult === 'fail'
-
-  const isError =
-    weightResult === 'error'
+  const weightData = weight.data
+  const visionData = vision.data
+  const detections = Array.isArray(visionData?.detections) ? visionData.detections : []
+  const snapshotUrl = vision.cacheKey
+    ? `http://127.0.0.1:8000/final-verification/vision-snapshot/${trayId}?v=${vision.cacheKey}`
+    : null
 
   return (
-    <div style={{
-      flex: 1,
-      display: 'flex',
-      flexDirection: 'column',
-      overflow: 'hidden'
-    }}>
-      <div style={{
-        background: 'var(--hmi-navy)',
-        color: 'white',
-        padding: '8px 16px',
-        display: 'flex',
-        alignItems: 'center',
-        gap: 12,
-        borderBottom:
-          '2px solid var(--hmi-blue-light)',
-        flexShrink: 0
-      }}>
-        <span style={{
-          fontWeight: 900,
-          fontSize: 16,
-          letterSpacing: '0.1em'
-        }}>
-          FINAL WEIGHT VERIFICATION
-        </span>
-
-        {verification?.loadcell?.mock === true && (
-          <span style={{
-            fontSize: 10,
-            color: '#fcd34d'
-          }}>
-            MOCK
-          </span>
-        )}
-
-        <div style={{ flex: 1 }} />
-
-        <span style={{
-          fontSize: 12,
-          color: '#93c5fd',
-          fontFamily:
-            'JetBrains Mono, monospace'
-        }}>
-          전체 {items.length}개 품목 합산 검증
-        </span>
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <div style={{ background: 'var(--hmi-navy)', color: 'white', padding: '9px 16px', display: 'flex' }}>
+        <strong>FINAL TRAY VERIFICATION</strong>
+        <span style={{ flex: 1 }} />
+        <span>{tray} · {trayIndex + 1}/{trays.length}</span>
       </div>
 
-      <div style={{
-        flex: 1,
-        overflow: 'auto',
-        background: 'var(--hmi-work-bg)',
-        padding: 16,
-        display: 'flex',
-        gap: 14
-      }}>
-
-        {/* Left: per-item breakdown */}
-        <div style={{
-          flex: '0 0 320px',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 10
-        }}>
-          <div style={{
-            background: 'white',
-            border: '1px solid var(--hmi-border)'
-          }}>
-            <div
-              className="section-header"
-              style={{ fontSize: 11 }}
-            >
-              피킹 완료 품목
-            </div>
-
-            {items.map((item, i) => {
-              const detail =
-                breakdown.find(
-                  (entry: any) =>
-                    entry.part_no === item.partNo
-                )
-
-              return (
-                <div
-                  key={`${item.partNo}-${i}`}
-                  style={{
-                    padding: '10px 14px',
-                    borderBottom:
-                      i < items.length - 1
-                        ? '1px solid var(--hmi-border-light)'
-                        : 'none'
-                  }}
-                >
-                  <div style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    marginBottom: 3
-                  }}>
-                    <span style={{
-                      fontWeight: 700,
-                      fontSize: 13
-                    }}>
-                      {item.name}
-                    </span>
-
-                    <span
-                      className="badge-green"
-                      style={{
-                        fontSize: 9,
-                        padding: '1px 6px'
-                      }}
-                    >
-                      ✓ PICKED
-                    </span>
-                  </div>
-
-                  <div style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    fontSize: 11
-                  }}>
-                    <span style={{
-                      fontFamily:
-                        'JetBrains Mono, monospace',
-                      color: '#374151'
-                    }}>
-                      {item.partNo} · {item.qty} EA
-                    </span>
-
-                    <span style={{
-                      fontFamily:
-                        'JetBrains Mono, monospace',
-                      color: 'var(--hmi-text-muted)'
-                    }}>
-                      {detail
-                        ? `${Number(detail.unit_weight_g).toFixed(2)} g/EA → ${Number(detail.expected_weight_g).toFixed(2)} g`
-                        : '단위중량 확인 대기'}
-                    </span>
-                  </div>
-                </div>
-              )
-            })}
+      <div style={{ flex: 1, overflow: 'auto', padding: 14, background: 'var(--hmi-work-bg)', display: 'grid', gridTemplateColumns: '260px 1fr', gap: 12 }}>
+        <div>
+          <div style={{ background: 'white', border: '1px solid var(--hmi-border)' }}>
+            <div className="section-header">TRAY별 최종 검수</div>
+            {trays.map((label, index) => (
+              <button
+                key={label}
+                onClick={() => setTrayIndex(index)}
+                style={{ width: '100%', padding: 11, textAlign: 'left', border: 0, borderBottom: '1px solid #ddd', background: index === trayIndex ? '#eff6ff' : 'white' }}
+              >
+                <strong>{index + 1}. {label}</strong><br />
+                <small>
+                  WEIGHT {statusLabel(weights[label]?.status ?? 'idle')}
+                  {' · '}VISION {statusLabel(visions[label]?.status ?? 'idle')}
+                </small>
+              </button>
+            ))}
           </div>
 
-          <div style={{
-            background: '#eff6ff',
-            border: '2px solid var(--hmi-blue)',
-            padding: '10px 14px'
-          }}>
-            <div style={{
-              fontSize: 11,
-              color: 'var(--hmi-blue)',
-              marginBottom: 4
-            }}>
-              예상 총 부품 순중량
-            </div>
+          <div style={{ marginTop: 10, padding: 10, background: '#fffbeb', border: '1px solid #f59e0b', fontSize: 11 }}>
+            {tray} 한 개만 Load Cell #2에 올려 검수합니다.<br />
+            실측 총중량 − Tray 63 g = 실측 부품 순중량<br />
+            parts.yaml 단위중량은 실측값 · 허용오차 ±5.0 g
+          </div>
 
-            <div style={{
-              fontFamily:
-                'JetBrains Mono, monospace',
-              fontWeight: 900,
-              fontSize: 24,
-              color: 'var(--hmi-blue)'
-            }}>
-              {valueOrDash(expectedWeightG)}
-            </div>
+          <div style={{ marginTop: 10, background: 'white', border: '1px solid var(--hmi-border)' }}>
+            <div className="section-header">현재 Tray 작업지시</div>
+            {trayItems.map(item => (
+              <div key={item.no} style={{ padding: 9, borderBottom: '1px solid #eee' }}>
+                <strong>{item.name}</strong> · {item.qty} EA
+              </div>
+            ))}
           </div>
         </div>
 
-        {/* Right */}
-        <div style={{
-          flex: 1,
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 12
-        }}>
-          <div style={{
-            background: 'white',
-            border: '1px solid var(--hmi-border)'
-          }}>
-            <div
-              className="section-header"
-              style={{ fontSize: 11 }}
-            >
-              LOAD CELL #2 — 최종 박스 무게 검증
+        <div style={{ minWidth: 0 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '0.9fr 1.1fr', gap: 12 }}>
+            <div style={{ background: 'white', border: '1px solid var(--hmi-border)', padding: 12 }}>
+              <div className="section-header">LOAD CELL #2 — {tray}</div>
+              <button className="btn-primary" onClick={() => void checkWeight()} disabled={weight.status === 'checking' || isPaused || showStop} style={{ width: '100%', margin: '10px 0' }}>
+                {weight.status === 'checking' ? '무게 측정 중...' : weight.status === 'idle' ? '⚖ Tray 무게 검수' : '↻ Tray 무게 재측정'}
+              </button>
+
+              {[
+                ['실측 총중량', fmt(weightData?.measured_total_weight_g)],
+                ['Tray 자체 무게', fmt(weightData?.tray_weight_g)],
+                ['실측 부품 순중량', fmt(weightData?.measured_parts_weight_g)],
+                ['예상 부품 순중량', fmt(weightData?.expected_parts_weight_g)],
+                ['중량 차이', fmt(weightData?.difference_g)],
+                ['허용오차', `±${fmt(weightData?.tolerance_g)}`],
+              ].map(([key, value]) => (
+                <div key={key} style={{ display: 'flex', justifyContent: 'space-between', padding: 7, background: '#f8f9fa', marginBottom: 4 }}>
+                  <span>{key}</span><strong>{value}</strong>
+                </div>
+              ))}
+
+              <div style={{ padding: 10, marginTop: 8, fontWeight: 900, background: weight.status === 'pass' ? 'var(--hmi-green-bg)' : weight.status === 'fail' ? 'var(--hmi-red-bg)' : '#f8f9fa' }}>
+                WEIGHT {statusLabel(weight.status)}{weight.message ? ` · ${weight.message}` : ''}
+              </div>
             </div>
 
-            <div style={{
-              padding: '14px 18px'
-            }}>
-              {weightResult === 'checking' ? (
-                <div style={{
-                  textAlign: 'center',
-                  padding: '28px',
-                  color: 'var(--hmi-blue)'
-                }}>
-                  <div
-                    className="spin"
-                    style={{
-                      display: 'inline-block',
-                      width: 28,
-                      height: 28,
-                      border:
-                        '3px solid var(--hmi-blue)',
-                      borderTopColor: 'transparent',
-                      marginBottom: 10
-                    }}
-                  />
+            <div style={{ background: 'white', border: '1px solid var(--hmi-border)', padding: 12 }}>
+              <div className="section-header">C920 — 비전 부품 검수</div>
+              <button className="btn-primary" onClick={() => void checkVision()} disabled={vision.status === 'checking' || isPaused || showStop} style={{ width: '100%', margin: '10px 0' }}>
+                {vision.status === 'checking' ? '비전 추론 중...' : '▣ 비전 부품 검수'}
+              </button>
+              <div style={{ fontSize: 10, color: '#64748b', marginBottom: 8 }}>
+                버튼을 누른 순간 C920 한 프레임만 YOLO로 검사합니다. 결과는 관측용입니다.
+              </div>
 
-                  <div style={{
-                    fontWeight: 700
-                  }}>
-                    최종 박스 무게 측정 중...
-                  </div>
-                </div>
+              {snapshotUrl ? (
+                <img src={snapshotUrl} alt={`${tray} 비전 검수`} style={{ width: '100%', maxHeight: 330, objectFit: 'contain', background: '#111827' }} />
               ) : (
-                <div style={{
-                  display: 'grid',
-                  gridTemplateColumns:
-                    '1fr 1fr',
-                  gap: 16
-                }}>
-                  <div>
-                    <div style={{
-                      fontSize: 11,
-                      color:
-                        'var(--hmi-text-muted)',
-                      marginBottom: 8
-                    }}>
-                      측정값
-                    </div>
-
-                    {[
-                      {
-                        label: '실측 부품 순중량',
-                        val:
-                          valueOrDash(
-                            measuredWeightG
-                          )
-                      },
-                      {
-                        label: '예상 부품 순중량',
-                        val:
-                          valueOrDash(
-                            expectedWeightG
-                          )
-                      },
-                      {
-                        label: '중량 차이',
-                        val:
-                          valueOrDash(
-                            differenceG
-                          )
-                      },
-                    ].map(row => (
-                      <div
-                        key={row.label}
-                        style={{
-                          display: 'flex',
-                          justifyContent:
-                            'space-between',
-                          padding: '7px 10px',
-                          background: '#f8f9fa',
-                          border:
-                            '1px solid var(--hmi-border-light)',
-                          marginBottom: 6
-                        }}
-                      >
-                        <span style={{
-                          fontSize: 12,
-                          color: '#374151'
-                        }}>
-                          {row.label}
-                        </span>
-
-                        <span style={{
-                          fontFamily:
-                            'JetBrains Mono, monospace',
-                          fontWeight: 700
-                        }}>
-                          {row.val}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-
-                  <div>
-                    <div style={{
-                      fontSize: 11,
-                      color:
-                        'var(--hmi-text-muted)',
-                      marginBottom: 8
-                    }}>
-                      판정 기준
-                    </div>
-
-                    <div style={{
-                      display: 'flex',
-                      justifyContent:
-                        'space-between',
-                      padding: '7px 10px',
-                      background: '#f8f9fa',
-                      border:
-                        '1px solid var(--hmi-border-light)',
-                      marginBottom: 6
-                    }}>
-                      <span style={{
-                        fontSize: 12,
-                        color: '#374151'
-                      }}>
-                        허용 오차
-                      </span>
-
-                      <span style={{
-                        fontFamily:
-                          'JetBrains Mono, monospace',
-                        fontWeight: 700
-                      }}>
-                        ±{returnedToleranceG.toFixed(1)} g
-                      </span>
-                    </div>
-
-                    {!isError && (
-                      <div style={{
-                        display: 'flex',
-                        justifyContent:
-                          'space-between',
-                        padding: '9px 10px',
-                        background:
-                          isPass
-                            ? 'var(--hmi-green-bg)'
-                            : 'var(--hmi-red-bg)',
-                        border:
-                          `2px solid ${
-                            isPass
-                              ? 'var(--hmi-green)'
-                              : 'var(--hmi-red-accent)'
-                          }`
-                      }}>
-                        <span style={{
-                          fontWeight: 700,
-                          color:
-                            isPass
-                              ? 'var(--hmi-green)'
-                              : 'var(--hmi-red)'
-                        }}>
-                          무게 판정
-                        </span>
-
-                        <span style={{
-                          fontFamily:
-                            'JetBrains Mono, monospace',
-                          fontWeight: 900,
-                          fontSize: 16,
-                          color:
-                            isPass
-                              ? 'var(--hmi-green)'
-                              : 'var(--hmi-red)'
-                        }}>
-                          {isPass
-                            ? 'PASS'
-                            : 'FAIL'}
-                        </span>
-                      </div>
-                    )}
-                  </div>
+                <div style={{ height: 220, display: 'grid', placeItems: 'center', background: '#111827', color: '#9ca3af' }}>
+                  검수 후 Bounding Box 스크린샷 표시
                 </div>
               )}
+
+              <div style={{ marginTop: 8, fontWeight: 900 }}>
+                VISION {statusLabel(vision.status)}
+              </div>
+              {vision.message && <div style={{ color: 'var(--hmi-red)', fontSize: 11 }}>{vision.message}</div>}
+              {detections.map((detection: any, detectionIndex: number) => (
+                <div key={`${detection.class_key}-${detectionIndex}`} style={{ padding: 5, marginTop: 4, background: '#f8f9fa', fontSize: 11 }}>
+                  <strong>{detection.display_name ?? detection.class_key}</strong>
+                  {' · confidence '}{Number(detection.confidence ?? 0).toFixed(2)}
+                </div>
+              ))}
             </div>
           </div>
 
-          {(isPass || isFail || isError) && (
-            <div style={{
-              background:
-                isPass
-                  ? 'var(--hmi-green-bg)'
-                  : 'var(--hmi-red-bg)',
-              border:
-                `2px solid ${
-                  isPass
-                    ? 'var(--hmi-green)'
-                    : 'var(--hmi-red-accent)'
-                }`,
-              padding: '16px 20px'
-            }}>
-              <div style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 14
-              }}>
-                <span style={{
-                  fontSize: 28,
-                  color:
-                    isPass
-                      ? 'var(--hmi-green)'
-                      : 'var(--hmi-red)'
-                }}>
-                  {isPass ? '✓' : '✗'}
-                </span>
-
-                <div style={{ flex: 1 }}>
-                  <div style={{
-                    fontWeight: 900,
-                    fontSize: 18,
-                    color:
-                      isPass
-                        ? 'var(--hmi-green)'
-                        : 'var(--hmi-red)'
-                  }}>
-                    {isPass
-                      ? 'FINAL WEIGHT VERIFIED — PASS'
-                      : isError
-                        ? 'FINAL VERIFICATION NOT READY'
-                        : 'WEIGHT VERIFICATION FAILED'}
-                  </div>
-
-                  <div style={{
-                    fontSize: 13,
-                    marginTop: 4
-                  }}>
-                    {verification?.message}
-                  </div>
-
-                  {isPass
-                    && !isPaused
-                    && !showStop
-                    && autoCountdown !== null
-                    && (
-                      <div style={{
-                        fontSize: 13,
-                        color:
-                          'var(--hmi-green-dark)',
-                        marginTop: 4
-                      }}>
-                        {autoCountdown > 0
-                          ? `${autoCountdown}초 후 Tray 복귀 단계로 이동합니다...`
-                          : 'Tray 복귀 단계로 이동합니다...'}
-                      </div>
-                    )}
-                </div>
-              </div>
-            </div>
-          )}
-
-          <div style={{
-            display: 'flex',
-            gap: 8
-          }}>
-            <button
-              className="btn-warning"
-              style={{
-                flex: 1,
-                padding: '10px'
-              }}
-              onClick={() => {
-                void runFinalVerification()
-              }}
-            >
-              ↺ 재측정
+          <div style={{ display: 'flex', gap: 8, marginTop: 12, background: 'white', padding: 10, border: '1px solid var(--hmi-border)' }}>
+            <button className="btn-primary" onClick={next} disabled={weight.status !== 'pass' || isPaused || showStop} style={{ flex: 1 }}>
+              {trayIndex < trays.length - 1 ? '다음 Tray 검수 →' : allWeightPassed ? '✓ 전체 Tray 무게 검수 완료 · 반환 시작' : '마지막 Tray 무게 PASS 필요'}
             </button>
-
-            <button
-              className="btn-secondary"
-              style={{
-                flex: 1,
-                padding: '10px'
-              }}
-              onClick={onPause}
-            >
-              ⏸ 일시 정지
-            </button>
-
-            <button
-              className="btn-danger"
-              style={{
-                flex: 1,
-                padding: '10px'
-              }}
-              onClick={onStop}
-            >
-              ■ 작업 중지
-            </button>
+            <button className="btn-secondary" onClick={onPause}>{isPaused ? '▶ 계속' : 'Ⅱ 일시 정지'}</button>
+            <button className="btn-danger" onClick={onStop}>■ 작업 중지</button>
           </div>
         </div>
       </div>

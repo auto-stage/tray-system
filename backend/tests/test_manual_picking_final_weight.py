@@ -49,6 +49,7 @@ def test_mock_final_weight_uses_expected_total(monkeypatch):
     )
 
     request = backend_server.FinalVerificationRequest(
+        tray_id=1,
         items=[
             backend_server.FinalVerificationItem(part_no="B001", quantity=2),
             backend_server.FinalVerificationItem(part_no="W001", quantity=1),
@@ -58,11 +59,15 @@ def test_mock_final_weight_uses_expected_total(monkeypatch):
     result = backend_server.final_verification_check(request)
     assert result["success"] is True
     assert result["passed"] is True
-    assert result["expected_weight_g"] == (
+    expected_parts = (
         float(backend_server.parts_catalog["t_bolt"]["weight_g"]) * 2
         + float(backend_server.parts_catalog["t_nut"]["weight_g"])
     )
-    assert result["measured_weight_g"] == result["expected_weight_g"]
+    assert result["expected_parts_weight_g"] == expected_parts
+    assert result["measured_parts_weight_g"] == expected_parts
+    assert result["measured_total_weight_g"] == (
+        float(backend_server.FINAL_TRAY_WEIGHT_G) + expected_parts
+    )
 
 
 def test_mock_final_weight_offset_can_force_fail(monkeypatch):
@@ -88,6 +93,7 @@ def test_mock_final_weight_offset_can_force_fail(monkeypatch):
     )
 
     request = backend_server.FinalVerificationRequest(
+        tray_id=4,
         items=[backend_server.FinalVerificationItem(part_no="N001", quantity=1)],
         tolerance_g=5.0,
     )
