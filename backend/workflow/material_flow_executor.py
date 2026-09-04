@@ -36,6 +36,7 @@ class MaterialFlowExecutor:
         release_monitor_timeout_sec: float = 5.0,
         release_monitor_poll_sec: float = 0.2,
         release_confirm_count: int = 3,
+        return_slot_z_offset_mm: float = 0.0,
     ) -> None:
 
         self.material_flow = material_flow
@@ -63,6 +64,12 @@ class MaterialFlowExecutor:
         self.release_confirm_count = max(
             int(release_confirm_count),
             1,
+        )
+
+        # 공급용 Mapping 좌표는 그대로 사용하고,
+        # 반납 시에만 Z축 삽입 높이를 추가 보정한다.
+        self.return_slot_z_offset_mm = float(
+            return_slot_z_offset_mm
         )
 
         self.alignment_callback = alignment_callback
@@ -1551,6 +1558,50 @@ class MaterialFlowExecutor:
                 "RETURN_MOVE_TO_SLOT",
                 result,
             )
+
+        # ----------------------------------------------------
+        # 반납 전용 Z 높이 보정
+        #
+        # 공급/인출 시에는 기존 Mapping 좌표를 그대로 사용하고,
+        # 반납 시에만 Slot 도착 후 Z축을 추가 상승시킨다.
+        # ----------------------------------------------------
+        if abs(self.return_slot_z_offset_mm) > 1e-6:
+            self._set_progress(
+                phase="RETURN",
+                step="RETURN_SLOT_Z_OFFSET",
+                message=(
+                    f"반납 삽입 높이 Z "
+                    f"{self.return_slot_z_offset_mm:+.1f} mm 보정 중"
+                ),
+                detail={
+                    "tray_id": tray_id,
+                    "z_offset_mm": self.return_slot_z_offset_mm,
+                },
+            )
+
+            result = self.stage.move_relative(
+                0.0,
+                self.return_slot_z_offset_mm,
+            )
+
+            history.append({
+                "step": "RETURN_SLOT_Z_OFFSET",
+                "z_offset_mm": self.return_slot_z_offset_mm,
+                "result": result,
+            })
+
+            print(
+                "[RETURN Z OFFSET] "
+                f"TRAY {tray_id:02d} "
+                f"Z {self.return_slot_z_offset_mm:+.1f} mm "
+                f"target={result.get('target_mm')}"
+            )
+
+            if not result.get("success"):
+                return self._failed(
+                    "RETURN_SLOT_Z_OFFSET",
+                    result,
+                )
 
         self.material_flow.return_slot_arrived()
 

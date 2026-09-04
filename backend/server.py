@@ -688,12 +688,22 @@ RELEASE_WEIGHT_CHANGE_THRESHOLD_G = max(
     0.0,
 )
 
+# Tray 공급 좌표와 반납 삽입 좌표의 Z 높이 차이.
+# 현재 실기 시험값: 반납 시 기존 Mapping보다 +30 mm.
+RETURN_SLOT_Z_OFFSET_MM = float(
+    os.getenv(
+        "RETURN_SLOT_Z_OFFSET_MM",
+        "30.0",
+    )
+)
+
 print(
     "[MATERIAL FLOW] "
     f"gripper_servo_bypass={'ON' if GRIPPER_SERVO_BYPASS else 'OFF'} "
     f"release_monitor={RELEASE_MONITOR_TIMEOUT_S:.1f}s/"
     f"{RELEASE_MONITOR_POLL_S:.2f}s "
-    f"confirm={RELEASE_CONFIRM_COUNT}"
+    f"confirm={RELEASE_CONFIRM_COUNT} "
+    f"return_slot_z_offset={RETURN_SLOT_Z_OFFSET_MM:+.1f}mm"
 )
 
 
@@ -737,6 +747,7 @@ if (
         release_monitor_timeout_sec=RELEASE_MONITOR_TIMEOUT_S,
         release_monitor_poll_sec=RELEASE_MONITOR_POLL_S,
         release_confirm_count=RELEASE_CONFIRM_COUNT,
+        return_slot_z_offset_mm=RETURN_SLOT_Z_OFFSET_MM,
         # 실제 Stage에서는 ArUco 정렬을 BYPASS하지 않는다.
         # 함수 정의는 파일 뒤쪽에 있지만 callback은 실행 시점에 조회된다.
         alignment_callback=build_material_flow_alignment_callback(),
@@ -773,6 +784,7 @@ elif (
         release_monitor_timeout_sec=RELEASE_MONITOR_TIMEOUT_S,
         release_monitor_poll_sec=RELEASE_MONITOR_POLL_S,
         release_confirm_count=RELEASE_CONFIRM_COUNT,
+        return_slot_z_offset_mm=RETURN_SLOT_Z_OFFSET_MM,
         # Mock 장치 시험은 기존 BYPASS를 유지하되, 실제 ArUco 카메라를
         # 선택한 경우에는 동일한 정렬 callback으로 통합 시퀀스를 검증한다.
         alignment_callback=build_material_flow_alignment_callback(),
