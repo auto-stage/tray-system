@@ -14,10 +14,25 @@ class MockGripperAdapter:
     def __init__(
         self,
         loadcell=None,
+        open_angle_deg: int = 30,
+        close_angle_deg: int = 150,
     ) -> None:
         self.loadcell = loadcell
+        self.open_angle_deg = self._validate_angle(open_angle_deg)
+        self.close_angle_deg = self._validate_angle(close_angle_deg)
         self.is_open = True
-        self.angle = 30
+        self.angle = self.open_angle_deg
+
+    @staticmethod
+    def _validate_angle(angle_deg: int) -> int:
+        angle = int(angle_deg)
+
+        if not 0 <= angle <= 180:
+            raise ValueError(
+                "Servo angle은 0~180 범위여야 합니다."
+            )
+
+        return angle
 
     def _set_load(
         self,
@@ -34,41 +49,43 @@ class MockGripperAdapter:
 
     def open(self) -> dict[str, Any]:
         self.is_open = True
-        self.angle = 30
-
+        result = self.set_angle(self.open_angle_deg)
         self._set_load(False)
-
-        return {
-            "success": True,
-            "mock": True,
+        result.update({
             "state": "OPEN",
-            "angle": self.angle,
+            "action": "OPEN",
             "message": "Mock Gripper OPEN",
-        }
+        })
+        return result
 
     def close(self) -> dict[str, Any]:
         self.is_open = False
-        self.angle = 150
-
+        result = self.set_angle(self.close_angle_deg)
         self._set_load(True)
-
-        return {
-            "success": True,
-            "mock": True,
+        result.update({
             "state": "CLOSED",
-            "angle": self.angle,
+            "action": "CLOSE",
             "message": "Mock Gripper CLOSE",
-        }
+        })
+        return result
 
     def set_angle(
         self,
         angle: int,
     ) -> dict[str, Any]:
-        self.angle = int(angle)
+        try:
+            self.angle = self._validate_angle(angle)
+        except (TypeError, ValueError):
+            return {
+                "success": False,
+                "mock": True,
+                "message": "SERVO angle은 0~180 범위여야 합니다.",
+            }
 
         return {
             "success": True,
             "mock": True,
             "angle": self.angle,
+            "angle_deg": self.angle,
             "message": f"Mock Servo angle={self.angle}",
         }

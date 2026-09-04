@@ -9,130 +9,66 @@ class STM32GripperAdapter:
 
     별도 Serial 포트를 열지 않고 STM32StageAdapter의
     기존 Serial 연결과 I/O lock을 그대로 재사용한다.
+
+    OPEN/CLOSE 의미와 각도값은 상위 Backend가 관리하고,
+    STM32에는 항상 ``SERVO <angle_deg>`` 명령만 전달한다.
     """
 
-    def __init__(self, stage) -> None:
-        self.stage = stage
-
-    def _send_grip_command(
+    def __init__(
         self,
-        action: str,
-    ) -> dict[str, Any]:
+        stage,
+        open_angle_deg: int = 30,
+        close_angle_deg: int = 150,
+    ) -> None:
+        self.stage = stage
+        self.open_angle_deg = self._validate_angle(open_angle_deg)
+        self.close_angle_deg = self._validate_angle(close_angle_deg)
 
-        action = action.strip().upper()
+    @staticmethod
+    def _validate_angle(angle_deg: int) -> int:
+        angle = int(angle_deg)
 
-        if action not in {
-            "OPEN",
-            "CLOSE",
-        }:
-            return {
-                "success": False,
-                "message": f"지원하지 않는 GRIP action: {action}",
-            }
+        if not 0 <= angle <= 180:
+            raise ValueError(
+                "Servo angle은 0~180 범위여야 합니다."
+            )
 
-        # STM32StageAdapter가 아직 연결되지 않았다면 연결
+        return angle
+
+    def _ensure_connected(self) -> dict[str, Any] | None:
         if (
-            not self.stage._serial
-            or
-            not self.stage._serial.is_open
+            self.stage._serial
+            and self.stage._serial.is_open
         ):
-            try:
-                self.stage.connect()
-            except Exception as exc:
-                return {
-                    "success": False,
-                    "message": f"STM32 연결 실패: {exc}",
-                }
+            return None
 
-        result = self.stage._send_expect(
-            f"GRIP {action}",
-            success=f"OK GRIP {action}",
-            timeout=2.0,
-        )
-
-        if not result.get("success"):
+        try:
+            self.stage.connect()
+        except Exception as exc:
             return {
                 "success": False,
-                "action": action,
-                "message": result.get(
-                    "message",
-                    f"GRIP {action} 실패",
-                ),
-                "received": result.get(
-                    "received",
-                    [],
-                ),
+                "message": f"STM32 연결 실패: {exc}",
             }
 
-        # STM32 응답 예:
-        # OK GRIP OPEN 30
-        # OK GRIP CLOSE 150
-        tokens = (
-            result.get(
-                "message",
-                "",
-            ).split()
-        )
-
-        angle_deg = None
-
-        if len(tokens) >= 4:
-            try:
-                angle_deg = int(
-                    tokens[3]
-                )
-            except ValueError:
-                pass
-
-        return {
-            "success": True,
-            "action": action,
-            "angle_deg": angle_deg,
-            "message": result.get(
-                "message",
-                "",
-            ),
-        }
-
-    def open(self) -> dict[str, Any]:
-        return self._send_grip_command(
-            "OPEN"
-        )
-
-    def close(self) -> dict[str, Any]:
-        return self._send_grip_command(
-            "CLOSE"
-        )
+        return None
 
     def set_angle(
         self,
         angle_deg: int,
     ) -> dict[str, Any]:
-        """
-        실제 그리퍼 장착 후 OPEN/CLOSE 각도 튜닝용.
-        정상 Material Flow에서는 open()/close() 사용을 권장한다.
-        """
+        """상위에서 지정한 절대 각도를 STM32에 전달한다."""
 
-        angle = int(angle_deg)
-
-        if not 0 <= angle <= 180:
+        try:
+            angle = self._validate_angle(angle_deg)
+        except (TypeError, ValueError):
             return {
                 "success": False,
                 "message": "SERVO angle은 0~180 범위여야 합니다.",
             }
 
-        if (
-            not self.stage._serial
-            or
-            not self.stage._serial.is_open
-        ):
-            try:
-                self.stage.connect()
-            except Exception as exc:
-                return {
-                    "success": False,
-                    "message": f"STM32 연결 실패: {exc}",
-                }
+        connection_error = self._ensure_connected()
+        if connection_error is not None:
+            return connection_error
 
         result = self.stage._send_expect(
             f"SERVO {angle}",
@@ -148,6 +84,10 @@ class STM32GripperAdapter:
                     "message",
                     "SERVO 명령 실패",
                 ),
+                "received": result.get(
+                    "received",
+                    [],
+                ),
             }
 
         return {
@@ -158,3 +98,24 @@ class STM32GripperAdapter:
                 "",
             ),
         }
+
+    def _set_named_angle(
+        self,
+        action: str,
+        angle_deg: int,
+    ) -> dict[str, Any]:
+        result = self.set_angle(angle_deg)
+        result["action"] = action
+        return result
+
+    def open(self) -> dict[str, Any]:
+        return self._set_named_angle(
+            "OPEN",
+            self.open_angle_deg,
+        )
+
+    def close(self) -> dict[str, Any]:
+        return self._set_named_angle(
+            "CLOSE",
+            self.close_angle_deg,
+        )

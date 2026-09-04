@@ -223,11 +223,6 @@ static bool HX711_2_CalValid = false;
 #define SERVO_CENTER_PULSE_US               1500U
 #define SERVO_MAX_PULSE_US                  2500U
 
-/* Gripper servo temporary angles.
- * 실제 그리퍼 장착 후 OPEN/CLOSE 각도만 재조정한다. */
-#define GRIP_OPEN_ANGLE_DEG                 30U
-#define GRIP_CLOSE_ANGLE_DEG                150U
-
 /* GRIPPER_STEPPER_FINAL_V1
  * 검증 완료된 rack stepper 설정
  * STEP = PD14 / TIM4_CH3 (D10), DIR = PD15 (D9)
@@ -2013,47 +2008,6 @@ static void StageProtocol_HandleLine(char *line)
 
     StageProtocol_SendText(
         "ERR FINAL_LOAD BAD_PARAM\r\n");
-    return;
-  }
-
-  if (strcmp(command, "GRIP") == 0)
-  {
-    char *action = strtok_r(NULL, " \t", &save);
-    char output[64];
-    uint32_t angle;
-
-    if (action == NULL)
-    {
-      StageProtocol_SendText("ERR GRIP_PARAM\r\n");
-      return;
-    }
-
-    StageProtocol_Uppercase(action);
-
-    if (strcmp(action, "OPEN") == 0)
-    {
-      angle = GRIP_OPEN_ANGLE_DEG;
-    }
-    else if (strcmp(action, "CLOSE") == 0)
-    {
-      angle = GRIP_CLOSE_ANGLE_DEG;
-    }
-    else
-    {
-      StageProtocol_SendText("ERR GRIP_PARAM\r\n");
-      return;
-    }
-
-    Servo_SetAngle(angle);
-
-    (void)snprintf(
-        output,
-        sizeof(output),
-        "OK GRIP %s %lu\r\n",
-        action,
-        (unsigned long)angle);
-
-    StageProtocol_SendText(output);
     return;
   }
 
