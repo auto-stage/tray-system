@@ -648,9 +648,52 @@ GRIPPER_SERVO_BYPASS = (
     in {"1", "true", "yes", "on"}
 )
 
+RELEASE_MONITOR_TIMEOUT_S = max(
+    float(
+        os.getenv(
+            "RELEASE_MONITOR_TIMEOUT_S",
+            "5.0",
+        )
+    ),
+    0.1,
+)
+
+RELEASE_MONITOR_POLL_S = max(
+    float(
+        os.getenv(
+            "RELEASE_MONITOR_POLL_S",
+            "0.2",
+        )
+    ),
+    0.05,
+)
+
+RELEASE_CONFIRM_COUNT = max(
+    int(
+        os.getenv(
+            "RELEASE_CONFIRM_COUNT",
+            "3",
+        )
+    ),
+    1,
+)
+
+RELEASE_WEIGHT_CHANGE_THRESHOLD_G = max(
+    float(
+        os.getenv(
+            "RELEASE_WEIGHT_CHANGE_THRESHOLD_G",
+            "15.0",
+        )
+    ),
+    0.0,
+)
+
 print(
     "[MATERIAL FLOW] "
-    f"gripper_servo_bypass={'ON' if GRIPPER_SERVO_BYPASS else 'OFF'}"
+    f"gripper_servo_bypass={'ON' if GRIPPER_SERVO_BYPASS else 'OFF'} "
+    f"release_monitor={RELEASE_MONITOR_TIMEOUT_S:.1f}s/"
+    f"{RELEASE_MONITOR_POLL_S:.2f}s "
+    f"confirm={RELEASE_CONFIRM_COUNT}"
 )
 
 
@@ -690,6 +733,10 @@ if (
         loadcell=loadcell,
         gripper_stepper=gripper_stepper,
         gripper_servo_bypass=GRIPPER_SERVO_BYPASS,
+        release_weight_change_threshold_g=RELEASE_WEIGHT_CHANGE_THRESHOLD_G,
+        release_monitor_timeout_sec=RELEASE_MONITOR_TIMEOUT_S,
+        release_monitor_poll_sec=RELEASE_MONITOR_POLL_S,
+        release_confirm_count=RELEASE_CONFIRM_COUNT,
         # 실제 Stage에서는 ArUco 정렬을 BYPASS하지 않는다.
         # 함수 정의는 파일 뒤쪽에 있지만 callback은 실행 시점에 조회된다.
         alignment_callback=build_material_flow_alignment_callback(),
@@ -722,6 +769,10 @@ elif (
         loadcell=loadcell,
         gripper_stepper=gripper_stepper,
         gripper_servo_bypass=GRIPPER_SERVO_BYPASS,
+        release_weight_change_threshold_g=RELEASE_WEIGHT_CHANGE_THRESHOLD_G,
+        release_monitor_timeout_sec=RELEASE_MONITOR_TIMEOUT_S,
+        release_monitor_poll_sec=RELEASE_MONITOR_POLL_S,
+        release_confirm_count=RELEASE_CONFIRM_COUNT,
         # Mock 장치 시험은 기존 BYPASS를 유지하되, 실제 ArUco 카메라를
         # 선택한 경우에는 동일한 정렬 callback으로 통합 시퀀스를 검증한다.
         alignment_callback=build_material_flow_alignment_callback(),
@@ -3304,8 +3355,71 @@ def stage_status():
 
 @app.post("/stage/home")
 def stage_home():
+    """
+    통합 HOME.
 
-    return stage.home()
+    안전을 위해 돌출될 수 있는 G축을 먼저 수납한 뒤
+    기존 Stage HOME(X -> Z)을 순차 실행한다.
+
+    순서:
+        G HOME -> X HOME -> Z HOME
+
+    G HOME 실패 시 X/Z는 실행하지 않는다.
+    X 또는 Z HOME 실패 시 기존 stage.home() 로직에 따라
+    즉시 실패 반환한다.
+    """
+
+    history = []
+
+    # --------------------------------------------------------
+    # 1. G-axis HOME
+    # --------------------------------------------------------
+    if gripper_stepper is not None:
+        g_result = gripper_stepper.home()
+
+        history.append({
+            "axis": "G",
+            "result": g_result,
+        })
+
+        if not g_result.get("success"):
+            return {
+                "success": False,
+                "step": "G_HOME",
+                "message": g_result.get(
+                    "message",
+                    "G축 HOME 실패",
+                ),
+                "history": history,
+                "status": stage.get_status(),
+            }
+
+    # --------------------------------------------------------
+    # 2~3. 기존 X -> Z HOME
+    # --------------------------------------------------------
+    xz_result = stage.home()
+
+    history.append({
+        "axes": ["X", "Z"],
+        "result": xz_result,
+    })
+
+    if not xz_result.get("success"):
+        return {
+            **xz_result,
+            "step": "XZ_HOME",
+            "history": history,
+        }
+
+    return {
+        "success": True,
+        "message": "G/X/Z HOME 완료",
+        "history": history,
+        "status": xz_result.get(
+            "status",
+            stage.get_status(),
+        ),
+    }
 
 
 @app.post(

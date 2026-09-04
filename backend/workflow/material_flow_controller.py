@@ -371,7 +371,9 @@ class MaterialFlowController:
                 tray_id
             )
 
-        self.current_return_tray = None
+        # 실제 Handoff 복귀가 끝날 때까지 현재 Tray를 유지한다.
+        # 그래야 Frontend가 다음 Tray를 너무 일찍 탐색하지 않는다.
+        self.current_return_tray = tray_id
         self.return_state = "RETURN_TO_HANDOFF"
 
         return self.get_status()
@@ -381,6 +383,10 @@ class MaterialFlowController:
         Tray 복귀 후 Stage가 다시
         Conveyor Handoff 위치에 도착.
         """
+
+        # 이제 실제 Handoff에 도착했으므로
+        # 다음 반환 Tray를 받을 수 있다.
+        self.current_return_tray = None
 
         if (
             len(self.returned_trays)

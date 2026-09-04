@@ -32,6 +32,10 @@ class MaterialFlowExecutor:
         grip_settle_sec: float = 0.5,
         stepper_settle_sec: float = 0.3,
         gripper_servo_bypass: bool = False,
+        release_weight_change_threshold_g: float = 15.0,
+        release_monitor_timeout_sec: float = 5.0,
+        release_monitor_poll_sec: float = 0.2,
+        release_confirm_count: int = 3,
     ) -> None:
 
         self.material_flow = material_flow
@@ -40,6 +44,26 @@ class MaterialFlowExecutor:
         self.loadcell = loadcell
         self.gripper_stepper = gripper_stepper
         self.gripper_servo_bypass = bool(gripper_servo_bypass)
+
+        self.release_weight_change_threshold_g = max(
+            float(release_weight_change_threshold_g),
+            0.0,
+        )
+
+        self.release_monitor_timeout_sec = max(
+            float(release_monitor_timeout_sec),
+            0.1,
+        )
+
+        self.release_monitor_poll_sec = max(
+            float(release_monitor_poll_sec),
+            0.05,
+        )
+
+        self.release_confirm_count = max(
+            int(release_confirm_count),
+            1,
+        )
 
         self.alignment_callback = alignment_callback
 
@@ -271,6 +295,154 @@ class MaterialFlowExecutor:
             }
 
         return self.gripper.open()
+
+    def _wait_after_release_open(self) -> None:
+        """
+        실제 Servo에서는 OPEN 후 기계적 안정화를 기다린다.
+
+        Servo BYPASS에서는 별도 고정 대기를 하지 않는다.
+        작업자가 Tray를 제거하는 시간은
+        _verify_release_by_change()의 실시간 감시 구간에서 제공한다.
+        """
+
+        if (
+            not self.gripper_servo_bypass
+            and self.grip_settle_sec > 0.0
+        ):
+            time.sleep(self.grip_settle_sec)
+
+    def _measure_release_baseline(self) -> dict[str, Any]:
+        """
+        OPEN 직전 Load Cell 평균 하중을 기준값으로 저장한다.
+        """
+
+        return self.loadcell.read_average(
+            samples=self.loadcell_samples,
+        )
+
+    def _verify_release_by_change(
+        self,
+        *,
+        baseline_weight_g: float,
+    ) -> dict[str, Any]:
+        """
+        OPEN 이후 Load Cell을 일정 시간 계속 감시한다.
+
+        현재 평균값과 OPEN 직전 baseline의 절댓값 차이가
+        threshold 이상인 상태가 연속 confirm_count회 관측되면
+        Tray가 해제된 것으로 판정한다.
+        """
+
+        deadline = (
+            time.monotonic()
+            + self.release_monitor_timeout_sec
+        )
+
+        consecutive = 0
+        max_change_g = 0.0
+        last_result: dict[str, Any] | None = None
+        last_weight_g = float(baseline_weight_g)
+        last_change_g = 0.0
+
+        while time.monotonic() < deadline:
+
+            if self._stop_requested():
+                return {
+                    "success": False,
+                    "cancelled": True,
+                    "message":
+                        "STOP 상태이므로 RELEASE 감시를 중단합니다.",
+                }
+
+            result = self.loadcell.read_average(
+                samples=self.loadcell_samples,
+            )
+
+            if not result.get("success"):
+                return result
+
+            last_result = result
+
+            current_weight_g = float(
+                result["average_weight_g"]
+            )
+
+            weight_change_g = abs(
+                current_weight_g
+                - float(baseline_weight_g)
+            )
+
+            last_weight_g = current_weight_g
+            last_change_g = weight_change_g
+            max_change_g = max(
+                max_change_g,
+                weight_change_g,
+            )
+
+            print(
+                "[RELEASE MONITOR] "
+                f"baseline={float(baseline_weight_g):.1f}g "
+                f"current={current_weight_g:.1f}g "
+                f"change={weight_change_g:.1f}g "
+                f"threshold={self.release_weight_change_threshold_g:.1f}g "
+                f"confirm={consecutive}/{self.release_confirm_count}"
+            )
+
+            if (
+                weight_change_g
+                >= self.release_weight_change_threshold_g
+            ):
+                consecutive += 1
+            else:
+                consecutive = 0
+
+            if consecutive >= self.release_confirm_count:
+                return {
+                    **result,
+                    "success": True,
+                    "tray_released": True,
+                    "baseline_weight_g":
+                        float(baseline_weight_g),
+                    "release_weight_g":
+                        current_weight_g,
+                    "weight_change_g":
+                        weight_change_g,
+                    "max_weight_change_g":
+                        max_change_g,
+                    "threshold_g":
+                        self.release_weight_change_threshold_g,
+                    "confirm_count":
+                        consecutive,
+                }
+
+            time.sleep(
+                self.release_monitor_poll_sec
+            )
+
+        if last_result is None:
+            return {
+                "success": False,
+                "message":
+                    "RELEASE Load Cell 측정값을 얻지 못했습니다.",
+            }
+
+        return {
+            **last_result,
+            "success": True,
+            "tray_released": False,
+            "baseline_weight_g":
+                float(baseline_weight_g),
+            "release_weight_g":
+                last_weight_g,
+            "weight_change_g":
+                last_change_g,
+            "max_weight_change_g":
+                max_change_g,
+            "threshold_g":
+                self.release_weight_change_threshold_g,
+            "confirm_count":
+                consecutive,
+        }
 
     def _align(
         self,
@@ -609,6 +781,7 @@ class MaterialFlowExecutor:
 
     def _recheck_release_once(
         self,
+        baseline_weight_g: float,
     ) -> dict[str, Any]:
         """
         OPEN 후 Tray 해제가 확인되지 않을 경우
@@ -624,9 +797,8 @@ class MaterialFlowExecutor:
                 "BEFORE_LOAD_VERIFY_RELEASE",
             )
 
-        load_result = self.loadcell.tray_released(
-            threshold_g=self.tray_present_threshold_g,
-            samples=self.loadcell_samples,
+        load_result = self._verify_release_by_change(
+            baseline_weight_g=baseline_weight_g,
         )
 
         if not load_result.get("success"):
@@ -1008,6 +1180,23 @@ class MaterialFlowExecutor:
         # 9. Tray 해제
         # ----------------------------------------------------
 
+        baseline_result = self._measure_release_baseline()
+
+        history.append({
+            "step": "LOAD_BASELINE_BEFORE_RELEASE",
+            "result": baseline_result,
+        })
+
+        if not baseline_result.get("success"):
+            return self._failed(
+                "LOAD_BASELINE_BEFORE_RELEASE",
+                baseline_result,
+            )
+
+        release_baseline_weight_g = float(
+            baseline_result["average_weight_g"]
+        )
+
         self._set_progress(
             phase="SUPPLY",
             step="GRIP_OPEN",
@@ -1033,9 +1222,7 @@ class MaterialFlowExecutor:
                 result,
             )
 
-        time.sleep(
-            self.grip_settle_sec
-        )
+        self._wait_after_release_open()
 
         # ----------------------------------------------------
         # 10. Load Cell → Tray 전달 확인
@@ -1053,9 +1240,8 @@ class MaterialFlowExecutor:
                 history,
             )
 
-        load_result = self.loadcell.tray_released(
-            threshold_g=self.tray_present_threshold_g,
-            samples=self.loadcell_samples,
+        load_result = self._verify_release_by_change(
+            baseline_weight_g=release_baseline_weight_g,
         )
 
         self._set_validation(
@@ -1087,7 +1273,9 @@ class MaterialFlowExecutor:
             "tray_released",
             False,
         ):
-            recheck_result = self._recheck_release_once()
+            recheck_result = self._recheck_release_once(
+                release_baseline_weight_g
+            )
 
             history.append({
                 "step": "LOAD_RELEASE_RECHECK",
@@ -1381,6 +1569,23 @@ class MaterialFlowExecutor:
             )
 
         # 8. Tray 해제
+        baseline_result = self._measure_release_baseline()
+
+        history.append({
+            "step": "RETURN_LOAD_BASELINE_BEFORE_RELEASE",
+            "result": baseline_result,
+        })
+
+        if not baseline_result.get("success"):
+            return self._failed(
+                "RETURN_LOAD_BASELINE_BEFORE_RELEASE",
+                baseline_result,
+            )
+
+        release_baseline_weight_g = float(
+            baseline_result["average_weight_g"]
+        )
+
         if self._stop_requested():
             return self._cancelled(
                 "BEFORE_GRIP_OPEN",
@@ -1400,9 +1605,7 @@ class MaterialFlowExecutor:
                 result,
             )
 
-        time.sleep(
-            self.grip_settle_sec
-        )
+        self._wait_after_release_open()
 
         # 9. Load Cell 해제 확인
         if self._stop_requested():
@@ -1411,9 +1614,8 @@ class MaterialFlowExecutor:
                 history,
             )
 
-        load_result = self.loadcell.tray_released(
-            threshold_g=self.tray_present_threshold_g,
-            samples=self.loadcell_samples,
+        load_result = self._verify_release_by_change(
+            baseline_weight_g=release_baseline_weight_g,
         )
 
         history.append({
@@ -1437,7 +1639,9 @@ class MaterialFlowExecutor:
             "tray_released",
             False,
         ):
-            recheck_result = self._recheck_release_once()
+            recheck_result = self._recheck_release_once(
+                release_baseline_weight_g
+            )
 
             history.append({
                 "step": "RETURN_RELEASE_RECHECK",
@@ -1461,11 +1665,23 @@ class MaterialFlowExecutor:
                     "history": history,
                 }
 
-        # 10. 후진
-        result = self._retract()
+        # 10. 반납 후 G축 수납 + 원점 재확립
+        #
+        # 일반 RETRACT 중 물리 RETRACT LIMIT에 먼저 닿으면
+        # 위치 오차 때문에 FAULT/HOMED 0이 될 수 있다.
+        # 반납 후에는 Tray를 이미 놓은 빈 Gripper이므로
+        # HOME 시퀀스로 안전하게 수납하고 G=0을 다시 확립한다.
+        self._set_progress(
+            phase="RETURN",
+            step="RETURN_INSERT_RETRACT",
+            message="Tray 반납 후 Gripper HOME/후진 중",
+        )
+
+        result = self.gripper_stepper.home()
 
         history.append({
             "step": "RETURN_INSERT_RETRACT",
+            "action": "GRIPPER_HOME",
             "result": result,
         })
 

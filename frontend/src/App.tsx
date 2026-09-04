@@ -4231,29 +4231,29 @@ function TrayReturnScreen({
                 <rect width="100%" height="100%" fill="url(#grid2)" />
               </svg>
             </div>
+            {/* Actual C525 ArUco camera stream */}
+            <img
+              src="http://127.0.0.1:8000/vision/stream?annotate=true"
+              alt="Return ArUco live camera"
+              style={{
+                position: 'absolute',
+                inset: 0,
+                width: '100%',
+                height: '100%',
+                objectFit: 'contain',
+                display: 'block',
+              }}
+            />
+
             {/* Center detection area */}
             <div style={{ position: 'absolute', inset: '15%', border: '2px dashed rgba(96,165,250,0.25)' }} />
 
-            {cur && cur.phase !== 'waiting' && (
-              <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                {cur.phase === 'detecting' ? (
-                  <div style={{ width: 90, height: 90, border: '2px dashed rgba(250,204,21,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative' }}>
-                    <span className="blink" style={{ color: 'rgba(250,204,21,0.8)', fontSize: 10, fontFamily: 'JetBrains Mono, monospace' }}>SEARCHING</span>
-                    <div style={{ position: 'absolute', inset: -14, border: '2px dashed rgba(250,204,21,0.3)' }} />
-                  </div>
-                ) : (
-                  <div style={{ position: 'relative' }}>
-                    <div style={{ width: 90, height: 90, background: 'white', border: `3px solid ${cur.phase === 'placed' ? '#22c55e' : '#3b82f6'}`, display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 2, padding: 6, boxShadow: `0 0 16px ${cur.phase === 'placed' ? 'rgba(34,197,94,0.5)' : 'rgba(59,130,246,0.5)'}` }}>
-                      {[1,0,1,0,1,0,0,1,0,0,1,0,1,0,0,1].map((v, k) => (
-                        <div key={k} style={{ background: v ? '#0f172a' : 'white' }} />
-                      ))}
-                    </div>
-                    <div style={{ position: 'absolute', inset: -10, border: `2px solid ${cur.phase === 'placed' ? '#22c55e' : '#3b82f6'}`, opacity: 0.6 }} />
-                    <div style={{ position: 'absolute', top: -24, left: '50%', transform: 'translateX(-50%)', background: cur.phase === 'placed' ? '#16a34a' : '#1d4ed8', color: 'white', fontSize: 10, padding: '2px 8px', fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, whiteSpace: 'nowrap' }}>
-                      ArUco #{cur.arucoId} → {cur.tray.tray}
-                    </div>
-                  </div>
-                )}
+            {cur && cur.phase === 'detecting' && (
+              <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
+                <div style={{ width: 90, height: 90, border: '2px dashed rgba(250,204,21,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative' }}>
+                  <span className="blink" style={{ color: 'rgba(250,204,21,0.8)', fontSize: 10, fontFamily: 'JetBrains Mono, monospace' }}>SEARCHING</span>
+                  <div style={{ position: 'absolute', inset: -14, border: '2px dashed rgba(250,204,21,0.3)' }} />
+                </div>
               </div>
             )}
 
@@ -7717,11 +7717,11 @@ function StageControlScreen({
             onClick={() =>
               runCommand(
                 '/stage/home',
-                'X/Z HOME 완료'
+                'G/X/Z HOME 완료'
               )
             }
           >
-            ⌂ X/Z HOME
+            ⌂ G/X/Z HOME
           </button>
 
           <button
